@@ -88,6 +88,43 @@ class BaseSoC(SoCMini):
                 pads         = platform.request_all("user_led"),
                 sys_clk_freq = sys_clk_freq)
 
+        # Bcrypt -----------------------------------------------------------------------------------
+
+        from gateware.bcrypt_proxy import BcryptProxy
+        self.bcrypt_proxy = BcryptProxy(n_cores=1)
+        self.bcrypt_proxy.add_sources()
+
+        class BcryptProxyControl(LiteXModule):
+            # FIXME: Fake dummy control, just to avoid logic pruning.
+            def __init__(self, bcrypt_proxy):
+                self._din   = CSRStorage(8)
+                self._ctrl  = CSRStorage()
+                self._wr_en = CSRStorage()
+
+                self._init_ready  = CSRStatus()
+                self._crypt_ready = CSRStatus()
+
+                self._rd_en = CSRStorage()
+                self._empty = CSRStatus()
+                self._dout  = CSRStatus()
+
+                # # #
+
+                self.comb += [
+                    bcrypt_proxy.din.eq(self._din.storage),
+                    bcrypt_proxy.ctrl.eq(self._ctrl.storage),
+                    bcrypt_proxy.wr_en.eq(self._wr_en.storage),
+
+                    self._init_ready.status.eq(bcrypt_proxy.init_ready),
+                    self._crypt_ready.status.eq(bcrypt_proxy.crypt_ready),
+
+                    bcrypt_proxy.rd_en.eq(self._rd_en.storage),
+                    self._empty.status.eq(bcrypt_proxy.empty),
+                    self._dout.status.eq(bcrypt_proxy.dout),
+                ]
+
+        self.bcrypt_proxy_control = BcryptProxyControl(bcrypt_proxy=self.bcrypt_proxy)
+
 # Build --------------------------------------------------------------------------------------------
 
 def main():
