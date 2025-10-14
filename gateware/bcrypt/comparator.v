@@ -8,6 +8,11 @@
  *
  */
 
+`include "log2.vh"
+
+`define	NUM_HASHES		512
+`define	HASH_NUM_MSB	`MSB(`NUM_HASHES-1)
+`define	HASH_COUNT_MSB	`MSB(`NUM_HASHES)
 
 module comparator(
 	input CLK,

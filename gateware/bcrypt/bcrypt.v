@@ -7,6 +7,8 @@
  * modification, are permitted.
  *
  */
+
+`include "main.vh"
 `include "bcrypt.vh"
 
 `ifdef	SIMULATION
