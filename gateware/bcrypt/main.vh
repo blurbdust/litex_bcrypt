@@ -16,6 +16,7 @@
 //
 // ************************************************************
 
+`include "log2.vh"
 
 // Parameters for ztex_inouttraffic
 `define	MAIN_MODULE_INST	bcrypt_v2
