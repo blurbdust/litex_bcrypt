@@ -9,7 +9,7 @@
 `ifndef _BCRYPT_VH_
 `define _BCRYPT_VH_
 
-//`define	SIMULATION
+`define	SIMULATION
 
 
 // An attempt to set more will result in cmp_config error
