@@ -67,10 +67,18 @@ class SimSoC(SoCCore):
 
         self.crg = CRG(platform.request("sys_clk"))
 
+
+        # Bcrypt -----------------------------------------------------------------------------------
+
+        from gateware.bcrypt_proxy import BcryptProxy
+        self.bcrypt_proxy = BcryptProxy(n_cores=1)
+        self.bcrypt_proxy.add_sources()
+
         # Sim Finish -------------------------------------------------------------------------------
+
         cycles = Signal(32)
         self.sync += cycles.eq(cycles + 1)
-        self.sync += If(cycles == int(3e6), Finish())
+        self.sync += If(cycles == int(1e6), Finish())
 
 # Build --------------------------------------------------------------------------------------------
 
