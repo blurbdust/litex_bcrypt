@@ -2,13 +2,10 @@
 
 import os
 import sys
-import socket
 import argparse
 
 from migen import *
-
 from litex.gen import *
-
 from litex.build.generic_platform import *
 from litex.build.sim              import SimPlatform
 from litex.build.sim.config       import SimConfig
@@ -99,6 +96,8 @@ def build_data_stream(salt16_le, iter_count, pkt_id=0x1234, word_id=0xABCD):
     DATA (31 words):
       EK[18], 64, iter_count, salt[4], IDs[2], cmp_data[5]
     All words emitted LSB-first on the 8-bit bus.
+
+    Note: This path feeds the two ID words and then echoes them back from the core.
     """
     words = []
     # Dummy EK (deterministic) — replace with real EK to get true bcrypt results.
@@ -113,9 +112,9 @@ def build_data_stream(salt16_le, iter_count, pkt_id=0x1234, word_id=0xABCD):
         b0,b1,b2,b3 = [salt16_le[4*i + k] for k in range(4)]
         words.append(b0 | (b1<<8) | (b2<<16) | (b3<<24))
 
-    # IDs
-    words.append(((pkt_id & 0xFFFF) | ((word_id & 0xFFFF)<<16)))
-    words.append(0)
+    # IDs (what we expect to read back)
+    words.append(((pkt_id & 0xFFFF) << 16) | (word_id & 0xFFFF))  # ID0 = {pkt_id, word_id}
+    words.append(0x00000024)                                      # ID1 = example "gen_id"
 
     # cmp_data[5]
     words += [0,0,0,0,0]
@@ -151,25 +150,24 @@ class SimSoC(SoCCore):
         self.bcrypt_proxy = BcryptProxy(n_cores=1)
         self.bcrypt_proxy.add_sources()
 
-        # Optional: raw bit monitor (kept, harmless)
-        mon = r"""
-module sim_monitor(input clk, input pop, input bit_in);
-    always @(posedge clk) if (pop) $display("[SIM] POP bit = %0d", bit_in);
-endmodule
-"""
-        with open("sim_monitor.v", "w") as f: f.write(mon)
-        platform.add_source("sim_monitor.v")
-
-        # Result dumper (prints IDs and 6 words once a packet is captured)
+        # Minimal result printer (IDs + 6 result words)
         dump = r"""
-module sim_dump(input clk, input done,
+module sim_dump #(
+    parameter EXP_ID0 = 32'h1234_ABCD,
+    parameter EXP_ID1 = 32'h0000_0024
+)(
+    input clk, input done,
     input [31:0] id0, input [31:0] id1,
     input [31:0] h0,  input [31:0] h1, input [31:0] h2,
-    input [31:0] h3,  input [31:0] h4, input [31:0] h5);
+    input [31:0] h3,  input [31:0] h4, input [31:0] h5
+);
+    function [7*8-1:0] passfail; input ok; begin passfail = ok ? "PASS   " : "FAIL   "; end endfunction
     always @(posedge clk) if (done) begin
         $display("=== BCRYPT PACKET ===");
-        $display("ID0 = 0x%08x", id0);
-        $display("ID1 = 0x%08x", id1);
+        $display("IDs: observed vs expected");
+        $display("ID0  obs=0x%08x  exp=0x%08x  %s", id0, EXP_ID0, passfail(id0==EXP_ID0));
+        $display("ID1  obs=0x%08x  exp=0x%08x  %s", id1, EXP_ID1, passfail(id1==EXP_ID1));
+        $display("Results (observed; EK here is a dummy):");
         $display("H0  = 0x%08x", h0);
         $display("H1  = 0x%08x", h1);
         $display("H2  = 0x%08x", h2);
@@ -185,9 +183,13 @@ endmodule
         # Bcrypt Test ------------------------------------------------------------------------------
         salt_bytes = [0x04, 0x41, 0x10, 0x04, 0x00, 0x00, 0x41, 0x10] + [0x00]*8
         iter_count = 1
+        PKT_ID     = 0x1234
+        WORD_ID    = 0xABCD
+        EXP_ID0    = ((PKT_ID & 0xFFFF) << 16) | (WORD_ID & 0xFFFF)  # 0x1234ABCD
+        EXP_ID1    = 0x00000024
 
         init_stream = build_init_stream()
-        data_stream = build_data_stream(salt_bytes, iter_count, pkt_id=0x1234, word_id=0xABCD)
+        data_stream = build_data_stream(salt_bytes, iter_count, pkt_id=PKT_ID, word_id=WORD_ID)
 
         INIT_LEN = len(init_stream)    # 4216
         DATA_LEN = len(data_stream)    # 124
@@ -200,20 +202,20 @@ endmodule
         wait_crypt_rdy_to = Signal(24)
 
         # ------------------------
-        # 1-bit output reader
+        # 1-bit output reader with header-hunt (LSB-first per 32-bit word)
         # ------------------------
-        reading    = Signal(reset=0)
-        bit_cnt    = Signal(9)   # 0..256 (+1 header)
-        word_cnt   = Signal(4)   # 0..7 (2 IDs + 6 results)
-        bit_idx    = Signal(5)   # 0..31 within word
-        cur_word   = Signal(32)
-        rd_en_pulse = Signal(reset=0)  # the only driver of rd_en
+        reading      = Signal(reset=0)
+        saw_header   = Signal(reset=0)
+        bit_idx      = Signal(5)   # 0..31 within word
+        word_cnt     = Signal(4)   # 0..7 (2 IDs + 6 results)
+        cur_word     = Signal(32)
+        rd_en_pulse  = Signal(reset=0)  # single driver for rd_en
 
         id0 = Signal(32); id1 = Signal(32)
         h0  = Signal(32); h1  = Signal(32); h2 = Signal(32)
         h3  = Signal(32); h4  = Signal(32); h5 = Signal(32)
 
-        # Connect ports (avoid combinational default on rd_en to prevent PROCASSWIRE)
+        # Proxy ports (keep rd_en purely from a reg to avoid PROCASSWIRE)
         self.comb += [
             self.bcrypt_proxy.din.eq(0),
             self.bcrypt_proxy.ctrl.eq(0),
@@ -221,27 +223,27 @@ endmodule
             self.bcrypt_proxy.rd_en.eq(rd_en_pulse),
         ]
 
-        # Small monitors
-        self.specials += Instance("sim_monitor",
-            i_clk    = ClockSignal("sys"),
-            i_pop    = rd_en_pulse & ~self.bcrypt_proxy.empty,
-            i_bit_in = self.bcrypt_proxy.dout
-        )
-
-        # Kick reading when data appears; then shift header(1) + 8 words (256 bits), LSB-first.
+        # Capture: wait for empty==0, pulse rd_en once, hunt header bit '1',
+        # then capture 8×32 data bits, LSB-first.
         self.sync += [
-            rd_en_pulse.eq(0),  # default: 0, pulse when starting burst
+            rd_en_pulse.eq(0),
 
             If(~reading & ~self.bcrypt_proxy.empty,
                 rd_en_pulse.eq(1),
                 reading.eq(1),
-                bit_cnt.eq(0),
-                word_cnt.eq(0),
+                saw_header.eq(0),
                 bit_idx.eq(0),
+                word_cnt.eq(0),
                 cur_word.eq(0)
             ).Elif(reading,
-                bit_cnt.eq(bit_cnt + 1),
-                If(bit_cnt > 0,  # skip the 1-bit header at bit_cnt==0
+                If(~saw_header,
+                    If(self.bcrypt_proxy.dout,
+                        saw_header.eq(1),
+                        bit_idx.eq(0),
+                        cur_word.eq(0)
+                    )
+                ).Else(
+                    # capture LSB-first into cur_word
                     cur_word.eq(cur_word | (self.bcrypt_proxy.dout << bit_idx)),
                     bit_idx.eq(bit_idx + 1),
 
@@ -270,6 +272,8 @@ endmodule
         done = Signal()
         self.comb += done.eq((~reading) & (word_cnt == 8))
         self.specials += Instance("sim_dump",
+            p_EXP_ID0 = EXP_ID0,
+            p_EXP_ID1 = EXP_ID1,
             i_clk = ClockSignal("sys"),
             i_done = done,
             i_id0 = id0, i_id1 = id1,
@@ -390,7 +394,7 @@ def main():
     sim_config.add_module("serial2console", "serial")
 
     # Build SoC.
-    soc = SimSoC( )
+    soc = SimSoC()
     builder = Builder(soc, csr_csv="csr.csv")
     builder.build(sim_config=sim_config, **verilator_build_kwargs)
 
