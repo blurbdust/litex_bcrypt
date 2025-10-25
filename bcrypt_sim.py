@@ -74,7 +74,6 @@ def build_init_stream(s_data_path=None):
 
     # S[0..1023]
     if s_data_path is None:
-        # Also try local working directory
         cand_local = "gateware/bcrypt/S_data.txt"
         if os.path.exists(cand_local):
             s_data_path = cand_local
@@ -102,7 +101,7 @@ def build_data_stream(salt16_le, iter_count, pkt_id=0x1234, word_id=0xABCD):
     All words emitted LSB-first on the 8-bit bus.
     """
     words = []
-    # Dummy EK (deterministic)
+    # Dummy EK (deterministic) — replace with real EK to get true bcrypt results.
     for i in range(18):
         words.append(0x11110000 + i)
 
@@ -146,14 +145,13 @@ class SimSoC(SoCCore):
 
         self.crg = CRG(platform.request("sys_clk"))
 
-
         # Bcrypt -----------------------------------------------------------------------------------
 
         from gateware.bcrypt_proxy import BcryptProxy
         self.bcrypt_proxy = BcryptProxy(n_cores=1)
         self.bcrypt_proxy.add_sources()
 
-        # Tiny console monitor to see pops.
+        # Optional: raw bit monitor (kept, harmless)
         mon = r"""
 module sim_monitor(input clk, input pop, input bit_in);
     always @(posedge clk) if (pop) $display("[SIM] POP bit = %0d", bit_in);
@@ -161,11 +159,28 @@ endmodule
 """
         with open("sim_monitor.v", "w") as f: f.write(mon)
         platform.add_source("sim_monitor.v")
-        self.specials += Instance("sim_monitor",
-            i_clk    = ClockSignal("sys"),
-            i_pop    = self.bcrypt_proxy.rd_en & ~self.bcrypt_proxy.empty,
-            i_bit_in = self.bcrypt_proxy.dout
-        )
+
+        # Result dumper (prints IDs and 6 words once a packet is captured)
+        dump = r"""
+module sim_dump(input clk, input done,
+    input [31:0] id0, input [31:0] id1,
+    input [31:0] h0,  input [31:0] h1, input [31:0] h2,
+    input [31:0] h3,  input [31:0] h4, input [31:0] h5);
+    always @(posedge clk) if (done) begin
+        $display("=== BCRYPT PACKET ===");
+        $display("ID0 = 0x%08x", id0);
+        $display("ID1 = 0x%08x", id1);
+        $display("H0  = 0x%08x", h0);
+        $display("H1  = 0x%08x", h1);
+        $display("H2  = 0x%08x", h2);
+        $display("H3  = 0x%08x", h3);
+        $display("H4  = 0x%08x", h4);
+        $display("H5  = 0x%08x", h5);
+    end
+endmodule
+"""
+        with open("sim_dump.v", "w") as f: f.write(dump)
+        platform.add_source("sim_dump.v")
 
         # Bcrypt Test ------------------------------------------------------------------------------
         salt_bytes = [0x04, 0x41, 0x10, 0x04, 0x00, 0x00, 0x41, 0x10] + [0x00]*8
@@ -184,17 +199,86 @@ endmodule
         wait_init_rdy_to  = Signal(24)
         wait_crypt_rdy_to = Signal(24)
 
-        # Defaults
+        # ------------------------
+        # 1-bit output reader
+        # ------------------------
+        reading    = Signal(reset=0)
+        bit_cnt    = Signal(9)   # 0..256 (+1 header)
+        word_cnt   = Signal(4)   # 0..7 (2 IDs + 6 results)
+        bit_idx    = Signal(5)   # 0..31 within word
+        cur_word   = Signal(32)
+        rd_en_pulse = Signal(reset=0)  # the only driver of rd_en
+
+        id0 = Signal(32); id1 = Signal(32)
+        h0  = Signal(32); h1  = Signal(32); h2 = Signal(32)
+        h3  = Signal(32); h4  = Signal(32); h5 = Signal(32)
+
+        # Connect ports (avoid combinational default on rd_en to prevent PROCASSWIRE)
         self.comb += [
             self.bcrypt_proxy.din.eq(0),
             self.bcrypt_proxy.ctrl.eq(0),
             self.bcrypt_proxy.wr_en.eq(0),
-            self.bcrypt_proxy.rd_en.eq(0),
+            self.bcrypt_proxy.rd_en.eq(rd_en_pulse),
         ]
 
+        # Small monitors
+        self.specials += Instance("sim_monitor",
+            i_clk    = ClockSignal("sys"),
+            i_pop    = rd_en_pulse & ~self.bcrypt_proxy.empty,
+            i_bit_in = self.bcrypt_proxy.dout
+        )
+
+        # Kick reading when data appears; then shift header(1) + 8 words (256 bits), LSB-first.
+        self.sync += [
+            rd_en_pulse.eq(0),  # default: 0, pulse when starting burst
+
+            If(~reading & ~self.bcrypt_proxy.empty,
+                rd_en_pulse.eq(1),
+                reading.eq(1),
+                bit_cnt.eq(0),
+                word_cnt.eq(0),
+                bit_idx.eq(0),
+                cur_word.eq(0)
+            ).Elif(reading,
+                bit_cnt.eq(bit_cnt + 1),
+                If(bit_cnt > 0,  # skip the 1-bit header at bit_cnt==0
+                    cur_word.eq(cur_word | (self.bcrypt_proxy.dout << bit_idx)),
+                    bit_idx.eq(bit_idx + 1),
+
+                    If(bit_idx == 31,
+                        Case(word_cnt, {
+                            0: [id0.eq(cur_word | (self.bcrypt_proxy.dout << 31))],
+                            1: [id1.eq(cur_word | (self.bcrypt_proxy.dout << 31))],
+                            2: [h0 .eq(cur_word | (self.bcrypt_proxy.dout << 31))],
+                            3: [h1 .eq(cur_word | (self.bcrypt_proxy.dout << 31))],
+                            4: [h2 .eq(cur_word | (self.bcrypt_proxy.dout << 31))],
+                            5: [h3 .eq(cur_word | (self.bcrypt_proxy.dout << 31))],
+                            6: [h4 .eq(cur_word | (self.bcrypt_proxy.dout << 31))],
+                            7: [h5 .eq(cur_word | (self.bcrypt_proxy.dout << 31))],
+                        }),
+                        word_cnt.eq(word_cnt + 1),
+                        bit_idx.eq(0),
+                        cur_word.eq(0),
+                        If(word_cnt == 7,
+                            reading.eq(0)
+                        )
+                    )
+                )
+            )
+        ]
+
+        done = Signal()
+        self.comb += done.eq((~reading) & (word_cnt == 8))
+        self.specials += Instance("sim_dump",
+            i_clk = ClockSignal("sys"),
+            i_done = done,
+            i_id0 = id0, i_id1 = id1,
+            i_h0  = h0,  i_h1  = h1,  i_h2 = h2,
+            i_h3  = h3,  i_h4  = h4,  i_h5 = h5
+        )
+
         # FSM --------------------------------------------------------------------
-        fsm = FSM(reset_state="WAIT_INIT_READY")
-        self.submodules += fsm
+        self.fsm = fsm = FSM(reset_state="WAIT_INIT_READY")
 
         # 1) Wait for init_ready from the core
         fsm.act("WAIT_INIT_READY",
@@ -271,16 +355,12 @@ endmodule
             NextState("READ")
         )
 
-        # 9) READ: pull bits if/when available
-        pop_cnt = Signal(8)
+        # 9) READ: let the 1-bit reader run; finish when a packet is captured (or nothing shows up).
         fsm.act("READ",
-            If(~self.bcrypt_proxy.empty,
-                self.bcrypt_proxy.rd_en.eq(1),
-                NextValue(pop_cnt, pop_cnt + 1),
-                If(pop_cnt == 255, NextState("DONE"))
-            ).Else(
-                # stop once FIFO is empty; core will re-assert init_ready after its cycle
+            If(done,
                 NextState("DONE")
+            ).Else(
+                NextState("READ")
             )
         )
 

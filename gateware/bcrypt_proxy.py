@@ -32,7 +32,7 @@ class BcryptProxy(LiteXModule):
 
             # Clk/Config.
             i_CLK             = ClockSignal("sys"),
-            i_mode_cmp        = 0b1, # FIXME/CHECKME.
+            i_mode_cmp        = 0b0,
 
             # Input stream.
             i_din             = self.din,
