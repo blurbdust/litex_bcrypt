@@ -5,7 +5,9 @@ import sys
 import argparse
 
 from migen import *
+
 from litex.gen import *
+
 from litex.build.generic_platform import *
 from litex.build.sim              import SimPlatform
 from litex.build.sim.config       import SimConfig
@@ -124,6 +126,176 @@ def build_data_stream(salt16_le, iter_count, pkt_id=0x1234, word_id=0xABCD):
     for w in words: stream += le_bytes_from_word32(w)
     return stream
 
+# Software model -----------------------------------------------------------------------------------
+# Mirrors the core’s “Expand-Key-B (salt-only)” phase + final 64 enciphers.
+
+def _bf_F(x, S0, S1, S2, S3):
+    a = (x >> 24) & 0xff
+    b = (x >> 16) & 0xff
+    c = (x >>  8) & 0xff
+    d = (x >>  0) & 0xff
+    return ((((S0[a] + S1[b]) & 0xffffffff) ^ S2[c]) + S3[d]) & 0xffffffff
+
+def _bf_encipher(l, r, P, S0, S1, S2, S3):
+    for i in range(16):
+        l = (l ^ P[i]) & 0xffffffff
+        r = (r ^ _bf_F(l, S0, S1, S2, S3)) & 0xffffffff
+        l, r = r, l
+    l, r = r, l
+    r = (r ^ P[16]) & 0xffffffff
+    l = (l ^ P[17]) & 0xffffffff
+    return l, r
+
+def _expand_key_b_once(P, S0, S1, S2, S3, salt_words):
+    # Expand-Key-B salt-only pass: rewrite P then S in pairs; XOR L/R with salt words before each encipher.
+    L = 0
+    R = 0
+    sj = 0
+    # P (18 entries --> 9 pairs)
+    for i in range(0, 18, 2):
+        L ^= salt_words[sj]; R ^= salt_words[(sj + 1) & 3]; sj = (sj + 2) & 3
+        L, R = _bf_encipher(L, R, P, S0, S1, S2, S3)
+        P[i], P[i+1] = L, R
+    # S (4*256 entries)
+    for box in (S0, S1, S2, S3):
+        for i in range(0, 256, 2):
+            L ^= salt_words[sj]; R ^= salt_words[(sj + 1) & 3]; sj = (sj + 2) & 3
+            L, R = _bf_encipher(L, R, P, S0, S1, S2, S3)
+            box[i], box[i+1] = L, R
+
+# ---- Variant sweep helpers (endianness + iteration semantics + swaps) ----------------------------
+
+def _byteswap32(w):
+    return ((w & 0x000000FF) << 24) | ((w & 0x0000FF00) << 8) | ((w & 0x00FF0000) >> 8) | ((w & 0xFF000000) >> 24)
+
+def _swap16(w):
+    return ((w & 0xFFFF) << 16) | ((w >> 16) & 0xFFFF)
+
+def _parse_word_from_bytes(b0, b1, b2, b3, mode):
+    if mode == "LE":
+        return (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) & 0xFFFFFFFF
+    if mode == "BE":
+        return (b3 | (b2 << 8) | (b1 << 16) | (b0 << 24)) & 0xFFFFFFFF
+    if mode == "LE16":
+        w = (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) & 0xFFFFFFFF
+        return _swap16(w)
+    if mode == "BE16":
+        w = (b3 | (b2 << 8) | (b1 << 16) | (b0 << 24)) & 0xFFFFFFFF
+        return _swap16(w)
+    raise ValueError("bad mode")
+
+def _decode_ek_words(data_stream, ek_mode):
+    ek = []
+    for i in range(18):
+        off = 4*i
+        ek.append(_parse_word_from_bytes(
+            data_stream[off+0], data_stream[off+1], data_stream[off+2], data_stream[off+3], ek_mode))
+    return ek
+
+def _decode_salt_words(salt16_le_bytes, salt_mode):
+    assert len(salt16_le_bytes) == 16
+    words = []
+    for i in range(4):
+        b0,b1,b2,b3 = [salt16_le_bytes[4*i + k] for k in range(4)]
+        words.append(_parse_word_from_bytes(b0,b1,b2,b3, salt_mode))
+    return words
+
+def _expand_times(iter_count, mode):
+    if mode == "none":         return 0
+    if mode == "iter":         return int(iter_count)
+    if mode == "iter_plus_1":  return 1 + int(iter_count)
+    if mode == "pow2":         return 1 << int(iter_count)
+    raise ValueError(mode)
+
+def _final_24_words(P, S0, S1, S2, S3):
+    pt = b"OrpheanBeholderScryDoubt"
+    blocks = []
+    for i in range(3):
+        b = pt[8*i:8*i+8]
+        l = (b[0]<<24)|(b[1]<<16)|(b[2]<<8)|b[3]
+        r = (b[4]<<24)|(b[5]<<16)|(b[6]<<8)|b[7]
+        blocks.append((l, r))
+    for _ in range(64):
+        for i in range(3):
+            l, r = blocks[i]
+            l, r = _bf_encipher(l, r, P, S0, S1, S2, S3)
+            blocks[i] = (l, r)
+    out = []
+    for (l, r) in blocks:
+        out.append(l & 0xffffffff)
+        out.append(r & 0xffffffff)
+    return out  # 6 words
+
+def compute_expected_variants(data_stream, s_data_path, salt_bytes, iter_count):
+    # Load S base
+    Sall = []
+    with open(s_data_path, "r") as f:
+        for ln in f:
+            ln = ln.strip()
+            if ln:
+                Sall.append(int(ln, 16))
+    if len(Sall) != 1024:
+        raise SystemExit(f"Expected 1024 S words, got {len(Sall)} from {s_data_path}")
+
+    S0b = Sall[0:256]; S1b = Sall[256:512]; S2b = Sall[512:768]; S3b = Sall[768:1024]
+
+    ek_modes    = ["LE", "BE", "LE16", "BE16"]
+    salt_modes  = ["LE", "BE", "LE16", "BE16"]
+    iter_modes  = ["none", "iter", "iter_plus_1", "pow2"]
+    lr_swaps    = [False, True]
+    out_bswaps  = [False, True]
+
+    variants = []
+    for ekm in ek_modes:
+        EK = _decode_ek_words(data_stream, ekm)
+        for sm in salt_modes:
+            salt_words = _decode_salt_words(salt_bytes, sm)
+            for im in iter_modes:
+                # clone base P,S for this iter mode
+                P  = EK[:]
+                S0 = S0b[:]; S1 = S1b[:]; S2 = S2b[:]; S3 = S3b[:]
+                passes = _expand_times(iter_count, im)
+                for _ in range(passes):
+                    _expand_key_b_once(P, S0, S1, S2, S3, salt_words)
+                base_out = _final_24_words(P, S0, S1, S2, S3)
+                for lrs in lr_swaps:
+                    if lrs:
+                        out_lr = [base_out[1], base_out[0], base_out[3], base_out[2], base_out[5], base_out[4]]
+                    else:
+                        out_lr = base_out[:]
+                    for bsw in out_bswaps:
+                        if bsw:
+                            out_final = list(map(_byteswap32, out_lr))
+                        else:
+                            out_final = out_lr
+                        lbl = f"EK={ekm:>4}  SALT={sm:>4}  ITER={im:>11}  LR_SWAP={'yes' if lrs else 'no '}  OUT_BSWAP={'yes' if bsw else 'no '}"
+                        variants.append((lbl, tuple(out_final)))
+    return variants
+
+def print_sw_candidate_variants(variants, limit=48):
+    print("=== SW model candidate variants (augmented) ===")
+    shown = 0
+    # Deterministic iteration order (common combos first)
+    pref = []
+    for ek in ["LE","BE","LE16","BE16"]:
+        for sa in ["LE","BE","LE16","BE16"]:
+            for it in ["iter","iter_plus_1","pow2","none"]:
+                for lrs in [False, True]:
+                    for bs in [False, True]:
+                        pref.append((ek,sa,it,lrs,bs))
+    for ek,sa,it,lrs,bs in pref:
+        for lbl, H in variants:
+            if (f"EK={ek}" in lbl) and (f"SALT={sa}" in lbl) and (f"ITER={it}" in lbl) \
+               and (("LR_SWAP=yes" in lbl) == lrs) and (("OUT_BSWAP=yes" in lbl) == bs):
+                print(lbl)
+                print(f"  SW H: {H[0]:08x} {H[1]:08x} {H[2]:08x} {H[3]:08x} {H[4]:08x} {H[5]:08x}")
+                shown += 1
+                if shown >= limit:
+                    print(f"... ({len(variants)-shown} more variants not shown)")
+                    return
+    if shown == 0:
+        print("(no variants generated)")
+
 # Simulation SoC -----------------------------------------------------------------------------------
 
 class SimSoC(SoCCore):
@@ -150,11 +322,17 @@ class SimSoC(SoCCore):
         self.bcrypt_proxy = BcryptProxy(n_cores=1)
         self.bcrypt_proxy.add_sources()
 
-        # Minimal result printer (IDs + 6 result words)
+        # Minimal result printer (IDs + 6 result words + SW compare)
         dump = r"""
 module sim_dump #(
     parameter EXP_ID0 = 32'h1234_ABCD,
-    parameter EXP_ID1 = 32'h0000_0024
+    parameter EXP_ID1 = 32'h0000_0024,
+    parameter EXP_H0  = 32'h0,
+    parameter EXP_H1  = 32'h0,
+    parameter EXP_H2  = 32'h0,
+    parameter EXP_H3  = 32'h0,
+    parameter EXP_H4  = 32'h0,
+    parameter EXP_H5  = 32'h0
 )(
     input clk, input done,
     input [31:0] id0, input [31:0] id1,
@@ -167,13 +345,13 @@ module sim_dump #(
         $display("IDs: observed vs expected");
         $display("ID0  obs=0x%08x  exp=0x%08x  %s", id0, EXP_ID0, passfail(id0==EXP_ID0));
         $display("ID1  obs=0x%08x  exp=0x%08x  %s", id1, EXP_ID1, passfail(id1==EXP_ID1));
-        $display("Results (observed; EK here is a dummy):");
-        $display("H0  = 0x%08x", h0);
-        $display("H1  = 0x%08x", h1);
-        $display("H2  = 0x%08x", h2);
-        $display("H3  = 0x%08x", h3);
-        $display("H4  = 0x%08x", h4);
-        $display("H5  = 0x%08x", h5);
+        $display("Results (observed) vs (software model from EK+ExpandKeyB+64enc):");
+        $display("H0  obs=0x%08x  exp=0x%08x  %s", h0, EXP_H0, passfail(h0==EXP_H0));
+        $display("H1  obs=0x%08x  exp=0x%08x  %s", h1, EXP_H1, passfail(h1==EXP_H1));
+        $display("H2  obs=0x%08x  exp=0x%08x  %s", h2, EXP_H2, passfail(h2==EXP_H2));
+        $display("H3  obs=0x%08x  exp=0x%08x  %s", h3, EXP_H3, passfail(h3==EXP_H3));
+        $display("H4  obs=0x%08x  exp=0x%08x  %s", h4, EXP_H4, passfail(h4==EXP_H4));
+        $display("H5  obs=0x%08x  exp=0x%08x  %s", h5, EXP_H5, passfail(h5==EXP_H5));
     end
 endmodule
 """
@@ -188,8 +366,31 @@ endmodule
         EXP_ID0    = ((PKT_ID & 0xFFFF) << 16) | (WORD_ID & 0xFFFF)  # 0x1234ABCD
         EXP_ID1    = 0x00000024
 
-        init_stream = build_init_stream()
+        s_data_path = "gateware/bcrypt/S_data.txt"
+        init_stream = build_init_stream(s_data_path=s_data_path)
         data_stream = build_data_stream(salt_bytes, iter_count, pkt_id=PKT_ID, word_id=WORD_ID)
+
+        # --- Software variants (print once so you can compare with RTL output) ---
+        variants = compute_expected_variants(data_stream, s_data_path, salt_bytes, iter_count)
+        print_sw_candidate_variants(variants, limit=1024)
+
+        #exit()
+
+        # Choose an in-sim comparison variant.
+        # Default heuristic: prefer EK=LE, SALT=LE, ITER=pow2, no LR swap, no OUT_BSWAP.
+        def _pick_variant(variants):
+            prefs = [
+                ("EK= LE", "SALT= LE", "ITER=     pow2", "LR_SWAP=no", "OUT_BSWAP=no"),
+                ("EK= LE", "SALT= LE", "ITER=       iter", "LR_SWAP=no", "OUT_BSWAP=no"),
+            ]
+            for ek_tag, sa_tag, it_tag, lr_tag, bs_tag in prefs:
+                for idx, (lbl, _) in enumerate(variants):
+                    if (ek_tag in lbl) and (sa_tag in lbl) and (it_tag in lbl) and (lr_tag in lbl) and (bs_tag in lbl):
+                        return idx
+            return 0
+        _sel = _pick_variant(variants)
+        print("Using variant:", variants[_sel][0])
+        (EXP_H0, EXP_H1, EXP_H2, EXP_H3, EXP_H4, EXP_H5) = variants[_sel][1]
 
         INIT_LEN = len(init_stream)    # 4216
         DATA_LEN = len(data_stream)    # 124
@@ -274,6 +475,12 @@ endmodule
         self.specials += Instance("sim_dump",
             p_EXP_ID0 = EXP_ID0,
             p_EXP_ID1 = EXP_ID1,
+            p_EXP_H0  = EXP_H0,
+            p_EXP_H1  = EXP_H1,
+            p_EXP_H2  = EXP_H2,
+            p_EXP_H3  = EXP_H3,
+            p_EXP_H4  = EXP_H4,
+            p_EXP_H5  = EXP_H5,
             i_clk = ClockSignal("sys"),
             i_done = done,
             i_id0 = id0, i_id1 = id1,
