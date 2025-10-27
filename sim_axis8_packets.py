@@ -37,49 +37,50 @@ PKT_TYPE_WORD_LIST   = 0x01
 PKT_TYPE_WORD_GEN    = 0x02
 PKT_TYPE_CMP_CONFIG  = 0x03
 
-def le16(x): return [x & 0xFF, (x >> 8) & 0xFF]
-def le32(x): return [ (x >> (8*i)) & 0xFF for i in range(4) ]
+def le16(x):  return [x & 0xFF, (x >> 8) & 0xFF]
+def le24(x):  return [x & 0xFF, (x >> 8) & 0xFF, (x >> 16) & 0xFF]
+def le32(x):  return [(x >> (8*i)) & 0xFF for i in range(4)]
 
-def build_header(pkt_type, pkt_id, payload_len):
-    return [PKT_VERSION, pkt_type] + le16(pkt_id) + le16(payload_len)
+# RTL header: 10 bytes total
+# [ver][type][res0(lo)][res0(hi)][len0][len1][len2][res1][id0][id1]
+def build_header(pkt_type, pkt_id, payload_len, version=PKT_VERSION):
+    hdr  = []
+    hdr += [version, pkt_type]
+    hdr += [0x00, 0x00]              # reserved0
+    hdr += le24(payload_len)         # 3-byte length (LE)
+    hdr += [0x00]                    # reserved1
+    hdr += le16(pkt_id)
+    return hdr
+
+# Even with DISABLE_CHECKSUM=1 the FSM still consumes a 32-bit checksum
+# right after the header and another 32-bit checksum after the payload.
+def add_checksums_around_payload(header, payload):
+    chk = [0x00, 0x00, 0x00, 0x00]   # dummy checksum words
+    return header + chk + payload + chk
 
 def build_cmp_config_payload_bcrypt(iter_count, salt16_bytes, subtype=b"b", hashes=None):
-    """
-    bcrypt_cmp_config format (exactly as RTL expects):
-      salt[16] + subtype[1] + iter_count[4-LE] + hash_count[2-LE]
-      + (hash_count * 4 LE bytes) + 0xCC
-    """
     assert isinstance(salt16_bytes, (bytes, bytearray)) and len(salt16_bytes) == 16
     assert subtype in (b"a", b"b", b"x", b"y")
     if hashes is None:
         hashes = []
 
-    def le16(x): return [x & 0xFF, (x >> 8) & 0xFF]
-    def le32(x): return [(x >> (8*i)) & 0xFF for i in range(4)]
-
-    payload = []
-    payload += list(salt16_bytes)          # 16
-    payload += [subtype[0]]                # 1
-    payload += le32(iter_count)            # 4 (LE)
-    payload += le16(len(hashes))           # 2 (LE)
-    for w in hashes:                       # N * 4 (LE)
-        payload += le32(w & 0x7FFFFFFF)
+    payload  = list(salt16_bytes)          # 16 bytes salt
+    payload += [subtype[0]]                # 1 byte subtype
+    payload += le32(iter_count)            # 4 bytes LE
+    payload += le16(len(hashes))           # 2 bytes LE
+    for w in hashes:
+        payload += le32(w & 0x7FFFFFFF)    # 4 bytes each (LE)
     payload += [0xCC]                      # magic
     return payload
 
 def build_word_list_payload(words):
-    # Simplest form: concatenate zero-terminated bytes for each word, and rely on packet end
-    # as the list terminator (this mirrors typical template_list_b behavior). Adjust if your
-    # repo expects explicit counts or ranges.
     p = []
     for w in words:
-        p += [ord(c) for c in w] + [0x00]  # C-style NUL termination
+        p += [ord(c) for c in w] + [0x00]  # NUL-terminated entries
     return p
 
 def build_word_gen_payload():
-    # num_ranges = 0
-    # num_generate = 0x00000000 (4 bytes)
-    # magic = 0xBB
+    # num_ranges = 0, num_generate = 0x00000000, magic = 0xBB
     return [0x00, 0x00, 0x00, 0x00, 0x00, 0xBB]
 
 class ByteStreamer(LiteXModule):
@@ -124,7 +125,7 @@ class WordCollector(LiteXModule):
         self.words = [Signal(32) for _ in range(nwords)]
 
         cur = Signal(32)
-        byte_pos = Signal(2)   # 0..3 within word
+        byte_pos = Signal(2)   # 0..3
         idx = Signal(max=nwords)
         capturing = Signal(reset=1)
 
@@ -132,7 +133,6 @@ class WordCollector(LiteXModule):
             self.done.eq(0),
             If(capturing,
                 If(self.sink.valid & self.sink.ready,
-                    # LSB-first 32b assembly
                     cur.eq(cur | (self.sink.data << (8*byte_pos))),
                     byte_pos.eq(byte_pos + 1),
                     If(byte_pos == 3,
@@ -158,7 +158,7 @@ class Platform(SimPlatform):
 class SimSoC(SoCMini):
     def __init__(self):
         platform     = Platform()
-        self.comb += platform.trace.eq(1) # Always enable tracing.
+        self.comb += platform.trace.eq(1)
         sys_clk_freq = int(50e6)
         SoCMini.__init__(self, platform, sys_clk_freq)
         self.crg = CRG(platform.request("sys_clk"))
@@ -181,26 +181,34 @@ class SimSoC(SoCMini):
         )
         self.bcrypt.add_sources()
 
-        # Packets -----------------------------------------------------------------
+        # ---------------- Packets ----------------
         cmp_id  = 0x0001
         wl_id   = 0x0002
         wg_id   = 0x0003
 
         iter_count = 5
-        salt16     = bytes([0x00]*16)
-        hashes     = [0]  # since mode_cmp=1 by default, provide >=1 comparator word
+        salt16     = bytes(range(0x10))
+        hashes     = [0]  # at least one
 
         cmp_pl   = build_cmp_config_payload_bcrypt(iter_count, salt16, subtype=b"b", hashes=hashes)
-        cmp_hdr  = build_header(PKT_TYPE_CMP_CONFIG, 0x0001, len(cmp_pl))
-        pkt_cmp  = cmp_hdr + cmp_pl
+        cmp_hdr  = build_header(PKT_TYPE_CMP_CONFIG, cmp_id, len(cmp_pl))
+        pkt_cmp  = add_checksums_around_payload(cmp_hdr, cmp_pl)
 
         wl_pl    = build_word_list_payload(["pass"])
         wl_hdr   = build_header(PKT_TYPE_WORD_LIST, wl_id, len(wl_pl))
-        pkt_wl   = wl_hdr + wl_pl
+        pkt_wl   = add_checksums_around_payload(wl_hdr, wl_pl)
 
-        wg_pl  = build_word_gen_payload()
-        wg_hdr = build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl))
-        pkt_wg = wg_hdr + wg_pl
+        wg_pl    = build_word_gen_payload()
+        wg_hdr   = build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl))
+        pkt_wg   = add_checksums_around_payload(wg_hdr, wg_pl)
+
+        # (Optional) quick dumps
+        def dump_bytes(lbl, bb, n=64):
+            print(lbl, "len=", len(bb))
+            print(" ".join(f"{b:02x}" for b in bb[:n]))
+        dump_bytes("PKT_CMP", pkt_cmp)
+        dump_bytes("PKT_WL ", pkt_wl)
+        dump_bytes("PKT_WG ", pkt_wg)
 
         # Streamers + collector
         self.tx_cmp = tx_cmp = ByteStreamer(pkt_cmp)
