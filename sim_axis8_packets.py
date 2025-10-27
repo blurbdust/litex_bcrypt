@@ -169,7 +169,12 @@ class SimSoC(SoCMini):
 
         self.platform.add_source(WRAPPER_SV)
         # Force SIMULATION=1 by defining the parameter at instantiation
-        self.bcrypt = bcrypt = BcryptCoreAXIS8(self.platform, num_cores=1)
+        self.bcrypt = bcrypt = BcryptCoreAXIS8(self.platform,
+            num_proxies     = 2,
+            proxies_n_cores = [4,4],     # 4 real cores per proxy
+            proxies_dummy   = [0,0],
+            proxies_bitmap  = [0,0]
+        )
         self.bcrypt.add_sources()
 
         # Packets -----------------------------------------------------------------

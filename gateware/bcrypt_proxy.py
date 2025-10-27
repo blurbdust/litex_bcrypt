@@ -9,7 +9,8 @@ from litex.gen import *
 # Bcrypt Proxy -------------------------------------------------------------------------------------
 
 class BcryptProxy(LiteXModule):
-    def __init__(self, n_cores=1):
+    def __init__(self, n_cores=1, dummy=0, cores_not_dummy=0, clk_domain="sys"):
+        # Proxy-side bus
         self.din         = Signal(8)
         self.ctrl        = Signal(2)
         self.wr_en       = Signal()
@@ -21,27 +22,24 @@ class BcryptProxy(LiteXModule):
         self.empty       = Signal()
         self.dout        = Signal()
 
-        # # #
+        # Control
+        self.mode_cmp    = Signal(reset=1)   # default: compare mode
 
-        # Bcrypt Proxy Instance.
+        # Verilog proxy (instantiates n real cores internally).
         self.specials += Instance("bcrypt_proxy",
-            # Parameters.
             p_NUM_CORES       = n_cores,
-            p_DUMMY           = 0, # FIXME/CHECKME.
-            p_CORES_NOT_DUMMY = 0, # FIXME/CHECKME.
+            p_DUMMY           = dummy,
+            p_CORES_NOT_DUMMY = cores_not_dummy,
 
-            # Clk/Config.
-            i_CLK             = ClockSignal("sys"),
-            i_mode_cmp        = 0b0,
+            i_CLK             = ClockSignal(clk_domain),
+            i_mode_cmp        = self.mode_cmp,
 
-            # Input stream.
             i_din             = self.din,
             i_ctrl            = self.ctrl,
             i_wr_en           = self.wr_en,
             o_init_ready      = self.init_ready,
             o_crypt_ready     = self.crypt_ready,
 
-            # Output stream.
             i_rd_en           = self.rd_en,
             o_empty           = self.empty,
             o_dout            = self.dout
