@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
 # bcrypt_sim.py — Bcrypt Sim
-# Bcrypt core wrapped in LiteX.
+# Bcrypt core wrapped in LiteX + Etherbone control.
 #
 # High-level:
-# - Single shared byte Memory holds all 3 packets (CMP_CONFIG / WORD_LIST / WORD_GEN).
-# - One AXI8 streamer: start from (base) for (size) bytes; async-read; 2-state FSM.
-# - AXI egress always-ready; bytes printed with LiteX Display (in sync).
+# - Wishbone SRAM region (host-writable via Etherbone) stores all packets.
+# - One AXI8 streamer reads from SRAM by (base,size) set over CSRs; 'start' kicks it.
+# - AXI egress always-ready; bytes logged with Display (sync).
+# - Packets can be built host-side (script) and written to SRAM.
 
 import argparse
 
@@ -19,15 +20,36 @@ from litex.build.sim              import SimPlatform
 from litex.build.sim.config       import SimConfig
 from litex.build.sim.verilator    import verilator_build_args, verilator_build_argdict
 
+from litex.soc.integration.soc      import SoCRegion
 from litex.soc.integration.soc_core import SoCMini
 from litex.soc.integration.builder  import Builder
-from litex.soc.interconnect         import stream
+from litex.soc.integration.common   import get_mem_data
+from litex.soc.interconnect         import stream, wishbone
+from litex.soc.interconnect.csr     import CSRStorage, CSRStatus, AutoCSR
+
+from liteeth.phy.model import LiteEthPHYModel
 
 # IOs ----------------------------------------------------------------------------------------------
 
 _io = [
+    # Clk / Rst.
     ("sys_clk", 0, Pins(1)),
     ("sys_rst", 0, Pins(1)),
+
+    # Ethernet (for Etherbone).
+    ("eth_clocks", 0,
+        Subsignal("tx", Pins(1)),
+        Subsignal("rx", Pins(1)),
+    ),
+    ("eth", 0,
+        Subsignal("source_valid", Pins(1)),
+        Subsignal("source_ready", Pins(1)),
+        Subsignal("source_data",  Pins(8)),
+
+        Subsignal("sink_valid",   Pins(1)),
+        Subsignal("sink_ready",   Pins(1)),
+        Subsignal("sink_data",    Pins(8)),
+    ),
 ]
 
 # Platform -----------------------------------------------------------------------------------------
@@ -36,111 +58,97 @@ class Platform(SimPlatform):
     def __init__(self):
         SimPlatform.__init__(self, "SIM", _io)
 
-# Packet helpers -----------------------------------------------------------------------------------
+# AXI8 Memory Streamer (WB SRAM-backed, range-driven) ----------------------------------------------
 
-PKT_VERSION = 2
-PKT_TYPE_WORD_LIST   = 0x01
-PKT_TYPE_WORD_GEN    = 0x02
-PKT_TYPE_CMP_CONFIG  = 0x03
-
-def le16(x):  return [x & 0xFF, (x >> 8) & 0xFF]
-def le24(x):  return [x & 0xFF, (x >> 8) & 0xFF, (x >> 16) & 0xFF]
-def le32(x):  return [(x >> (8*i)) & 0xFF for i in range(4)]
-
-def build_header(pkt_type, pkt_id, payload_len, version=PKT_VERSION):
-    # [ver][type][res0(lo)][res0(hi)][len0][len1][len2][res1][id0][id1]
-    return [version, pkt_type, 0x00, 0x00, *le24(payload_len), 0x00, *le16(pkt_id)]
-
-def _csum32_le(bs):
-    s = 0
-    for i in range(0, len(bs), 4):
-        w = bs[i:i+4] + [0]*(4 - (len(bs[i:i+4])%4))
-        s = (s + (w[0] | (w[1]<<8) | (w[2]<<16) | (w[3]<<24))) & 0xFFFFFFFF
-    s ^= 0xFFFFFFFF
-    return [s & 0xFF, (s>>8)&0xFF, (s>>16)&0xFF, (s>>24)&0xFF]
-
-def add_checksums_around_payload(header_bytes, payload_bytes):
-    return header_bytes + _csum32_le(header_bytes) + payload_bytes + _csum32_le(payload_bytes)
-
-def build_cmp_config_payload_bcrypt(iter_count, salt16_bytes, subtype=b"b", hashes=None):
-    assert len(salt16_bytes) == 16
-    hashes = hashes or []
-    p  = list(salt16_bytes)
-    p += [subtype[0]]
-    p += le32(iter_count)
-    p += le16(len(hashes))
-    for w in hashes: p += le32(w & 0x7FFFFFFF)
-    p += [0xCC]  # magic
-    return p
-
-def build_word_list_payload(words):
-    p = []
-    for w in words: p += [ord(c) for c in w] + [0x00]
-    return p
-
-def build_word_gen_payload():
-    # num_ranges=0, num_generate=1, magic=0xBB
-    return [0x00, 0x01, 0x00, 0x00, 0x00, 0xBB]
-
-# AXI8 Memory Streamer (range-driven) --------------------------------------------------------------
-
-class AXI8MemStreamer(LiteXModule):
+class AXI8WBStreamer(LiteXModule, AutoCSR):
     """
-    Stream a sub-range of a shared byte Memory on AXI-Stream(8).
-    - Inputs: base (start addr), size (bytes), start pulse/level.
-    - Async-read Memory port (no bubbles).
-    - 2-state FSM (IDLE/RUN).
-    - last = (addr == end) combinational; done pulses on final beat.
+    Reads bytes from a 32-bit Wishbone SRAM (2nd async-read port) and streams on AXI-Stream(8).
+
+    CSRs:
+      - base  (RW, 32b): byte address
+      - size  (RW, 32b): byte length
+      - start (RW, 1b) : write 1 to arm; requires 0->1 edge to trigger
+      - busy  (RO, 1b)
+      - done  (RO, 1b): 1-cycle pulse at end (read to observe)
+
+    Behavior:
+      - Triggers once per rising edge on 'start'.
+      - If software leaves start=1, it will NOT retrigger; write 0 then 1 next time.
     """
-    def __init__(self, mem, depth, clk_domain="sys"):
+    def __init__(self, sram_mem, sram_size_bytes):
+        # AXI-Stream OUT(8).
         self.source = stream.Endpoint([("data", 8)])
-        self.start  = Signal()
-        self.base   = Signal(max=depth)
-        self.size   = Signal(max=depth)
-        self.done   = Signal()
 
-        # Read port.
-        rp = mem.get_port(async_read=True)
+        # CSRs.
+        self._base  = CSRStorage(32, name="base")
+        self._size  = CSRStorage(32, name="size")
+        self._start = CSRStorage(1,  name="start")  # SW writes 1 to request start
+        self._busy  = CSRStatus (1,  name="busy")
+        self._done  = CSRStatus (1,  name="done")   # pulse
+
+        # 32-bit SRAM read port (async).
+        rp = sram_mem.get_port(async_read=True)
         self.specials += rp
 
-        # Latched params on start (so caller can reprogram while streaming).
-        base_l = Signal.like(self.base)
-        size_l = Signal.like(self.size)
-
-        addr   = Signal(max=depth)
-        end    = Signal(max=depth)
-        is_last= Signal()
+        # Byte addressing.
+        addr_b  = Signal(32)
+        end_b   = Signal(32)
+        bsel    = Signal(2)
+        data32  = Signal(32)
+        is_last = Signal()
 
         self.comb += [
-            rp.adr           .eq(addr),
-            self.source.data .eq(rp.dat_r),
-            self.source.last .eq(is_last),
-            is_last          .eq(addr == end),
+            rp.adr           .eq(addr_b[2:]),
+            data32           .eq(rp.dat_r),
+            bsel             .eq(addr_b[0:2]),
+            is_last          .eq(addr_b == end_b),
         ]
 
+        # Byte pick (LSB-first).
+        byte_arr = Array([data32[8*i:8*(i+1)] for i in range(4)])
+        self.comb += [
+            self.source.data .eq(byte_arr[bsel]),
+            self.source.last .eq(is_last),
+        ]
+
+        # Start edge detect.
+        start_q = Signal(reset=0)
+        start_p = Signal()  # 1 cycle on 0->1
+        self.comb += start_p.eq(self._start.storage & ~start_q)
+        self.sync += start_q.eq(self._start.storage)
+
+        # Status.
+        busy = Signal(reset=0)
+        done = Signal(reset=0)
+        self.comb += [
+            self._busy.status.eq(busy),
+            self._done.status.eq(done),
+        ]
+
+        # FSM.
         fsm = FSM(reset_state="IDLE")
         self.submodules += fsm
 
         fsm.act("IDLE",
             self.source.valid.eq(0),
-            self.done.eq(0),
-            If(self.start & (self.size != 0),
-                NextValue(base_l, self.base),
-                NextValue(size_l, self.size),
-                NextValue(addr,   self.base),
-                NextValue(end,    self.base + self.size - 1),
+            busy.eq(0),
+            done.eq(0),
+            If(start_p & (self._size.storage != 0),
+                NextValue(addr_b, self._base.storage),
+                NextValue(end_b,  self._base.storage + self._size.storage - 1),
                 NextState("RUN")
             )
         )
 
         fsm.act("RUN",
             self.source.valid.eq(1),
+            busy.eq(1),
             If(self.source.ready,
                 If(is_last,
-                    self.done.eq(1),
+                    done.eq(1),
                     NextState("IDLE")
                 ).Else(
-                    NextValue(addr, addr + 1)
+                    NextValue(addr_b, addr_b + 1)
                 )
             )
         )
@@ -148,14 +156,38 @@ class AXI8MemStreamer(LiteXModule):
 # Simulation SoC -----------------------------------------------------------------------------------
 
 class SimSoC(SoCMini):
-    def __init__(self):
+    def __init__(self, with_eth=True):
         platform     = Platform()
-        self.comb += platform.trace.eq(1)
         sys_clk_freq = int(50e6)
 
-        SoCMini.__init__(self, platform, sys_clk_freq)
+        SoCMini.__init__(self, platform, sys_clk_freq,
+            cpu_type  = None,
+            uart_name = "sim",
+        )
+        self.comb += platform.trace.eq(1)
         self.crg = CRG(platform.request("sys_clk"))
 
+        # --- Ethernet / Etherbone ---------------------------------------------------------------
+        if with_eth:
+            self.ethphy = LiteEthPHYModel(self.platform.request("eth"))
+            self.add_etherbone(
+                phy          = self.ethphy,
+                ip_address   = "192.168.1.50",
+                mac_address  = 0x10e2d5000001,
+                buffer_depth = 255,
+            )
+
+        # --- Wishbone SRAM (host accessible over Etherbone) -------------------------------------
+        # 64 KiB byte storage (but WB is 32-bit wide).
+        sram_size = 64*1024
+        self.stream_sram = wishbone.SRAM(sram_size)
+        self.bus.add_region("stream_mem", SoCRegion(origin=0x4010_0000, size=sram_size, cached=False))
+        self.bus.add_slave("stream_mem", self.stream_sram.bus)
+        # Tap internal memory for a 2nd read port.
+        mem = self.stream_sram.mem  # Memory(width=32, depth=sram_size//4)
+        self.specials += mem
+
+        # --- Bcrypt Wrapper ----------------------------------------------------------------------
         from gateware.bcrypt_wrapper import BcryptWrapper
         self.bcrypt = bcrypt = BcryptWrapper(self.platform,
             num_proxies     = 2,
@@ -166,95 +198,48 @@ class SimSoC(SoCMini):
         self.platform.add_source("gateware/bcrypt_axis_8b.sv")
         self.bcrypt.add_sources()
 
-        # Packets ---------------------------------------------------------------------------------
-        cmp_id, wl_id, wg_id = 0x0001, 0x0002, 0x0003
-        iter_count = 5
-        salt16     = bytes(range(0x10))
-        hashes     = [0]
+        # --- AXI8 Streamer (CSR-controlled, reads from SRAM) ------------------------------------
+        self.streamer = streamer = AXI8WBStreamer(mem, sram_size)
+        self.add_csr("streamer")
 
-        cmp_pl  = build_cmp_config_payload_bcrypt(iter_count,     salt16, b"b", hashes)
-        pkt_cmp = add_checksums_around_payload(build_header(PKT_TYPE_CMP_CONFIG, cmp_id, len(cmp_pl)), cmp_pl)
-
-        wl_pl   = build_word_list_payload(["pass"])
-        pkt_wl  = add_checksums_around_payload(build_header(PKT_TYPE_WORD_LIST, wl_id, len(wl_pl)), wl_pl)
-
-        wg_pl   = build_word_gen_payload()
-        pkt_wg  = add_checksums_around_payload(build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl)), wg_pl)
-
-        # Shared Memory layout (contiguous) -------------------------------------------------------
-        off_cmp = 0
-        len_cmp = len(pkt_cmp)
-        off_wl  = off_cmp + len_cmp
-        len_wl  = len(pkt_wl)
-        off_wg  = off_wl  + len_wl
-        len_wg  = len(pkt_wg)
-
-        all_bytes = pkt_cmp + pkt_wl + pkt_wg
-        depth     = len(all_bytes)
-
-        mem = Memory(8, depth, init=all_bytes)
-        self.specials += mem
-
-        # Single range-driven streamer -------------------------------------------------------------
-        self.tx = tx = AXI8MemStreamer(mem, depth)
-
-        # AXIS IN wiring --------------------------------------------------------------------------
+        # AXI wiring: Streamer -> Wrapper IN; Wrapper OUT ready=1.
         self.comb += [
-            bcrypt.sink.valid.eq(tx.source.valid),
-            bcrypt.sink.data .eq(tx.source.data),
-            bcrypt.sink.last .eq(tx.source.last),
-            tx.source.ready  .eq(bcrypt.sink.ready),
-
-            # AXIS OUT: always ready
+            bcrypt.sink.valid.eq(streamer.source.valid),
+            bcrypt.sink.data .eq(streamer.source.data),
+            bcrypt.sink.last .eq(streamer.source.last),
+            streamer.source.ready.eq(bcrypt.sink.ready),
             bcrypt.source.ready.eq(1),
         ]
 
-        # AXIS In Sequencer -----------------------------------------------------------------------
-        self.fsm = fsm = FSM(reset_state="SEND_CMP")
-        fsm.act("SEND_CMP",
-            NextValue(tx.base, off_cmp),
-            NextValue(tx.size, len_cmp),
-            tx.start.eq(1),
-            If(tx.done, NextState("SEND_WL"))
+        # AXIS In Display (sync-only; ignored by synthesis).
+        self.sync += If(bcrypt.sink.valid & bcrypt.sink.ready,
+            Display("AXIS.In byte=0x%02x last=%d", bcrypt.sink.data, bcrypt.sink.last)
         )
-        fsm.act("SEND_WL",
-            NextValue(tx.base, off_wl),
-            NextValue(tx.size, len_wl),
-            tx.start.eq(1),
-            If(tx.done, NextState("SEND_WG"))
-        )
-        fsm.act("SEND_WG",
-            NextValue(tx.base, off_wg),
-            NextValue(tx.size, len_wg),
-            tx.start.eq(1),
-            If(tx.done, NextState("DONE"))
-        )
-        fsm.act("DONE")
 
-        # AXIS Out Display (sync-only; ignored by synthesis) -------------------------------------
-        out_idx = Signal(32)
-        self.sync += [
-            If(bcrypt.source.valid & bcrypt.source.ready,
-                Display("AXIS.OUT byte=0x%02x last=%d", bcrypt.source.data, bcrypt.source.last),
-                out_idx.eq(out_idx + 1)
-            )
-        ]
+        # AXIS Out Display (sync-only; ignored by synthesis).
+        self.sync += If(bcrypt.source.valid & bcrypt.source.ready,
+            Display("AXIS.Out byte=0x%02x last=%d", bcrypt.source.data, bcrypt.source.last)
+        )
 
 # Build / Main -------------------------------------------------------------------------------------
 
 def sim_args(parser):
     verilator_build_args(parser)
+    parser.add_argument("--no-eth", action="store_true", help="Disable Etherbone.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Bcrypt Sim — Bcrypt core wrapped in LiteX (AXIS8).")
+    parser = argparse.ArgumentParser(description="Bcrypt Sim — Bcrypt core wrapped in LiteX (AXIS8, Etherbone).")
     sim_args(parser)
     args = parser.parse_args()
     verilator_kwargs = verilator_build_argdict(args)
 
     sim_config = SimConfig()
     sim_config.add_clocker("sys_clk", freq_hz=int(25e6))
+    if not args.no_eth:
+        # Enable UDP-based Ethernet model.
+        sim_config.add_module("ethernet", "eth", args={"interface": "tap0", "ip": "192.168.1.100"})
 
-    soc = SimSoC()
+    soc = SimSoC(with_eth=not args.no_eth)
     builder = Builder(soc, csr_csv="csr.csv", compile_software=False)
     builder.build(sim_config=sim_config, **verilator_kwargs)
 
