@@ -2,19 +2,12 @@
 //
 // bcrypt_axis8_wrap.sv — Symmetric AXI4-Stream 8-bit IN/OUT + CSR-style control for LiteX
 //
-// • IN  : AXIS 8-bit with TLAST  → directement le flux byte vers le pipeline original.
-// • OUT : AXIS 8-bit avec TLAST  ← conversion depuis le producteur 16-bit (outpkt_bcrypt).
-//
-// Remarque : le core produit des mots 16-bit. On les convertit en 2 octets successifs.
-// TLAST est émis sur le **dernier octet** du paquet (byte haut du dernier mot).
-//
-// Dépendances: mêmes modules que l'original (inpkt_header, template_list_b, word_gen_b,
-// bcrypt_expand_key_b, bcrypt_data, bcrypt_arbiter, comparator, outpkt_bcrypt, delay).
-//
 `timescale 1ns/1ps
 /* verilator lint_off TIMESCALEMOD */
 `include "main.vh"
 `include "bcrypt.vh"
+
+`define SIM_TRACE 1
 
 module bcrypt_axis8_wrap #(
   parameter int NUM_CORES      = 12,
@@ -80,6 +73,12 @@ module bcrypt_axis8_wrap #(
     .dout(din), .rd_en(rd_en), .empty(empty), .pkt_end_pulse(inpkt_end)
   );
 
+`ifdef SIM_TRACE
+  // Raw AXIS ingress visibility
+  always @(posedge CLK) if (s_axis_tvalid && s_axis_tready)
+    $display("[%0t] AXIS.IN byte=0x%02x last=%0d", $time, s_axis_tdata, s_axis_tlast);
+`endif
+
   // ================= OUT: 16-bit producer → AXIS8 =================
   wire [15:0] dout16;
   wire        outpkt_empty;
@@ -91,6 +90,12 @@ module bcrypt_axis8_wrap #(
     .din(dout16), .din_valid(~outpkt_empty), .din_ready(outpkt_rd_en), .din_last(outpkt_last),
     .m_tdata(m_axis_tdata), .m_tvalid(m_axis_tvalid), .m_tready(m_axis_tready), .m_tlast(m_axis_tlast)
   );
+
+`ifdef SIM_TRACE
+  // AXIS egress visibility
+  always @(posedge CLK) if (m_axis_tvalid && m_axis_tready)
+    $display("[%0t] AXIS.OUT byte=0x%02x last=%0d", $time, m_axis_tdata, m_axis_tlast);
+`endif
 
   // ================= Datapath original ====================
   localparam PKT_TYPE_WORD_LIST     = 8'd1;
@@ -111,6 +116,17 @@ module bcrypt_axis8_wrap #(
     .err_pkt_version(err_pkt_version), .err_pkt_type(err_inpkt_type),
     .err_pkt_len(err_inpkt_len), .err_pkt_checksum(err_inpkt_checksum)
   );
+
+`ifdef SIM_TRACE
+  // Header + errors
+  always @(posedge CLK) begin
+    if (inpkt_end) $display("[%0t] HDR: end type=%0d id=0x%04x", $time, inpkt_type, inpkt_id);
+    if (err_pkt_version)   $display("[%0t] HDR: ERR version",  $time);
+    if (err_inpkt_type)    $display("[%0t] HDR: ERR type",     $time);
+    if (err_inpkt_len)     $display("[%0t] HDR: ERR len",      $time);
+    if (err_inpkt_checksum)$display("[%0t] HDR: ERR checksum", $time);
+  end
+`endif
 
   wire word_gen_conf_en, word_list_wr_en, cmp_config_wr_en;
   assign rd_en = ~empty & (~inpkt_data | word_gen_conf_en | word_list_wr_en | cmp_config_wr_en);
@@ -134,6 +150,17 @@ module bcrypt_axis8_wrap #(
     .err_template(err_template), .err_word_list_count(err_word_list_count)
   );
 
+`ifdef SIM_TRACE
+  always @(posedge CLK) begin
+    if (word_list_wr_en)
+      $display("[%0t] WORD_LIST wr din=0x%02x empty=%0d full=%0d", $time, din, word_list_empty, word_list_full);
+    if (inpkt_end && (inpkt_type==PKT_TYPE_WORD_LIST || inpkt_type==PKT_TYPE_TEMPLATE_LIST))
+      $display("[%0t] WORD_LIST pkt end", $time);
+    if (err_template)         $display("[%0t] WORD_LIST ERR template", $time);
+    if (err_word_list_count)  $display("[%0t] WORD_LIST ERR count",    $time);
+  end
+`endif
+
   // WORD_GEN
   wire word_gen_conf_full, word_gen_empty, word_gen_set_empty;
   wire [7:0]  word_gen_dout;
@@ -154,6 +181,16 @@ module bcrypt_axis8_wrap #(
     .err_word_gen_conf(err_word_gen_conf)
   );
 
+`ifdef SIM_TRACE
+  always @(posedge CLK) begin
+    if (word_gen_conf_en)    $display("[%0t] WORD_GEN conf din=0x%02x", $time, din);
+    if (word_gen_conf_full)  $display("[%0t] WORD_GEN conf_full=1",     $time);
+    if (word_gen_set_empty)  $display("[%0t] WORD_GEN set_empty",       $time);
+    if (!word_gen_empty)     $display("[%0t] WORD_GEN dout=0x%02x rd_addr=%0d pkt_id=0x%04x", $time, word_gen_dout, word_gen_rd_addr, pkt_id);
+    if (err_word_gen_conf)   $display("[%0t] WORD_GEN ERR conf",        $time);
+  end
+`endif
+
   // CMP_CONFIG
   wire cmp_config_full, new_cmp_config, cmp_config_applied, sign_extension_bug, err_cmp_config;
   wire [`HASH_COUNT_MSB:0]  hash_count;
@@ -173,6 +210,15 @@ module bcrypt_axis8_wrap #(
     .addr(cmp_config_addr), .dout(cmp_config_dout), .sign_extension_bug(sign_extension_bug)
   );
 
+`ifdef SIM_TRACE
+  always @(posedge CLK) begin
+    if (cmp_config_wr_en)     $display("[%0t] CMP_CFG wr din=0x%02x addr=%0d", $time, din, cmp_config_addr);
+    if (new_cmp_config)       $display("[%0t] CMP_CFG new_cmp_config=1",       $time);
+    if (cmp_config_applied)   $display("[%0t] CMP_CFG applied",                $time);
+    if (err_cmp_config)       $display("[%0t] CMP_CFG ERR",                    $time);
+  end
+`endif
+
   // EXPAND KEY
   wire [31:0] ek_dout;
   wire        ek_rd_en, ek_empty;
@@ -183,6 +229,12 @@ module bcrypt_axis8_wrap #(
     .word_set_empty(word_gen_set_empty), .word_empty(word_gen_empty), .sign_extension_bug(sign_extension_bug),
     .dout(ek_dout), .rd_en(ek_rd_en), .empty(ek_empty)
   );
+
+`ifdef SIM_TRACE
+  always @(posedge CLK) begin
+    if (ek_rd_en && ~ek_empty) $display("[%0t] EK rd_en dout=0x%08x", $time, ek_dout);
+  end
+`endif
 
   // BCDATA
   wire [7:0]  bcdata_dout;
@@ -207,6 +259,13 @@ module bcrypt_axis8_wrap #(
     .data_ready(bcdata_ready), .init_ready(bc_init_ready),
     .start_init_tx(start_init_tx), .start_data_tx(start_data_tx), .data_tx_done(), .init_tx_done()
   );
+
+`ifdef SIM_TRACE
+  always @(posedge CLK) begin
+    if (bcdata_ready)      $display("[%0t] BCDATA data_ready=1 pkt_id=0x%04x gen_end=%0d", $time, bcdata_pkt_id, bcdata_gen_end);
+    if (|bcdata_error)     $display("[%0t] BCDATA ERR bits=0x%0x", $time, bcdata_error);
+  end
+`endif
 
   // ARBITER + CORES
   wire [31:0]            cmp_data;
@@ -237,6 +296,17 @@ module bcrypt_axis8_wrap #(
     .core_rd_en(core_rd_en), .core_empty_in(core_empty), .core_dout_in(core_dout)
   );
 
+`ifdef SIM_TRACE
+  always @(posedge CLK) begin
+    if (start_init_tx)   $display("[%0t] ARB start_init_tx", $time);
+    if (start_data_tx)   $display("[%0t] ARB start_data_tx pkt_id=0x%04x", $time, bcdata_pkt_id);
+    if (cmp_start)       $display("[%0t] CMP start hash_num=%0d", $time, cmp_hash_num);
+    if (cmp_found)       $display("[%0t] CMP found hash_num=%0d", $time, cmp_hash_num);
+    if (cmp_finished)    $display("[%0t] CMP finished", $time);
+    if (|arbiter_error)  $display("[%0t] ARB ERR bits=0x%0x", $time, arbiter_error);
+  end
+`endif
+
   // COMPARATOR
   comparator u_cmp (
     .CLK(CLK), .din(cmp_din), .wr_en(cmp_wr_en), .wr_addr(cmp_wr_addr), .hash_count(hash_count),
@@ -247,19 +317,26 @@ module bcrypt_axis8_wrap #(
   wire outpkt_full = 1'b0;
   assign arbiter_rd_en = ~arbiter_empty & ~outpkt_full;
 
-outpkt_bcrypt #(.HASH_NUM_MSB(`HASH_NUM_MSB), .SIMULATION(SIMULATION)) u_outpkt (
-  .CLK(CLK),
-  .din(arbiter_dout), .rd_addr(arbiter_rd_addr),
-  .source_not_empty(~arbiter_empty),
-  .wr_en(arbiter_rd_en),
-  .full(outpkt_full),
+  outpkt_bcrypt #(.HASH_NUM_MSB(`HASH_NUM_MSB), .SIMULATION(SIMULATION)) u_outpkt (
+    .CLK(CLK),
+    .din(arbiter_dout), .rd_addr(arbiter_rd_addr),
+    .source_not_empty(~arbiter_empty),
+    .wr_en(arbiter_rd_en),
+    .full(outpkt_full),
 
-  .pkt_type(outpkt_type), .pkt_id(arbiter_pkt_id),
-  .hash_num(hash_num), .num_processed(num_processed),
+    .pkt_type(outpkt_type), .pkt_id(arbiter_pkt_id),
+    .hash_num(hash_num), .num_processed(num_processed),
 
-  .dout(dout16), .rd_en(outpkt_rd_en),
-  .empty(outpkt_empty), .pkt_end_out(outpkt_last)
-);
+    .dout(dout16), .rd_en(outpkt_rd_en),
+    .empty(outpkt_empty), .pkt_end_out(outpkt_last)
+  );
+
+`ifdef SIM_TRACE
+  always @(posedge CLK) begin
+    if (arbiter_rd_en && ~arbiter_empty)
+      $display("[%0t] OUTPKT rd word=0x%04x last=%0d", $time, dout16, outpkt_last);
+  end
+`endif
 
   // STATUS/IDLE/ERROR
   assign pkt_comm_status = {err_cmp_config, err_word_gen_conf, err_template, err_word_list_count,
@@ -281,7 +358,6 @@ endmodule
 
 // ============================ Helpers ============================
 
-// AXIS8 → byte FIFO with TLAST
 module axis8_to_fifo #(parameter DEPTH=2048) (
   input  wire       CLK,
   input  wire       RSTN,
@@ -295,10 +371,10 @@ module axis8_to_fifo #(parameter DEPTH=2048) (
   output wire       pkt_end_pulse
 );
   localparam AW = $clog2(DEPTH);
-  reg  [8:0] mem [0:DEPTH-1]; // {last, data}
+  reg  [8:0] mem [0:DEPTH-1];
   reg  [AW:0] wr_ptr, rd_ptr;
 
-  assign s_tready = 1'b1; // add backpressure if required
+  assign s_tready = 1'b1;
 
   always @(posedge CLK or negedge RSTN) begin
     if (!RSTN) wr_ptr <= '0;
@@ -318,7 +394,6 @@ module axis8_to_fifo #(parameter DEPTH=2048) (
   end
 endmodule
 
-// Convert 16-bit valid/ready stream to AXIS8 (two bytes, TLAST on last byte)
 module stream16_to_axis8 (
   input  wire        CLK, RSTN,
   input  wire [15:0] din,
@@ -336,11 +411,10 @@ module stream16_to_axis8 (
   reg         last_reg;
   reg         vld;
 
-  assign din_ready = (state==IDLE) ? ( (~vld) || (vld && m_tready) ) : 1'b0;
-
-  assign m_tdata  = (state==IDLE) ? shreg[7:0] : shreg[15:8];
-  assign m_tvalid = vld;
-  assign m_tlast  = vld && (state==HI) && last_reg; // TLAST on high byte of last word
+  assign din_ready = (state==IDLE) ? ((~vld) || (vld && m_tready)) : 1'b0;
+  assign m_tdata   = (state==IDLE) ? shreg[7:0] : shreg[15:8];
+  assign m_tvalid  = vld;
+  assign m_tlast   = vld && (state==HI) && last_reg;
 
   always @(posedge CLK or negedge RSTN) begin
     if (!RSTN) begin
@@ -348,20 +422,15 @@ module stream16_to_axis8 (
     end else begin
       case (state)
         IDLE: begin
-          // Load a new 16-bit word when sink ready & valid
           if (din_valid && din_ready) begin
             shreg    <= din;
             last_reg <= din_last;
             vld      <= 1'b1;
           end
-          // Emit low byte
-          if (vld && m_tready) begin
-            state <= HI; // next: high byte
-          end
+          if (vld && m_tready) state <= HI;
         end
         HI: begin
           if (vld && m_tready) begin
-            // finished emitting second byte
             vld   <= 1'b0;
             state <= IDLE;
           end
