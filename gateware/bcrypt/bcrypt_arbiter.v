@@ -359,10 +359,11 @@ module bcrypt_arbiter #(
 				rd_tmp_wr_addr <= result_word_count;
 				result_word_count <= result_word_count + 1'b1;
 				if (result_word_count == PKT_NUM_WORDS-1) begin
-					if (mode_cmp)
-						state_rd <= STATE_RD_CMP;
-					else
-						state_rd <= STATE_RD_READ_COMPLETE;
+					//if (mode_cmp)
+					//	state_rd <= STATE_RD_CMP;
+					//else
+					//	state_rd <= STATE_RD_READ_COMPLETE;
+					state_rd <= STATE_RD_READ_COMPLETE;
 				end
 			end
 

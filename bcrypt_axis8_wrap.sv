@@ -8,6 +8,7 @@
 `include "bcrypt.vh"
 
 //`define SIM_TRACE 1
+`define SIM_TRACE2 1
 
 module bcrypt_axis8_wrap #(
   parameter int NUM_CORES      = 12,
@@ -365,6 +366,23 @@ end
 
   assign error_o = error_r;
 
+  `ifdef SIM_TRACE2
+  // OUTPKT -> stream16_to_axis8 handshake
+  always @(posedge CLK) begin
+    if (~outpkt_empty && outpkt_rd_en)
+      $display("[%0t] OUTPKT->AXIS16 word=0x%04x last=%0d (empty=%0d)",
+               $time, dout16, outpkt_last, outpkt_empty);
+    if (~outpkt_empty && ~outpkt_rd_en)
+      $display("[%0t] OUTPKT waiting: AXIS16 not ready (empty=%0d vld=%0d m_tready=%0d)",
+               $time, outpkt_empty, m_axis_tvalid, m_axis_tready);
+
+    // Downstream readiness
+    if (m_axis_tvalid && ~m_axis_tready)
+      $display("[%0t] AXIS8 downstream not ready (valid=1)", $time);
+  end
+`endif
+
+
 endmodule
 
 // ============================ Helpers ============================
@@ -422,7 +440,8 @@ module stream16_to_axis8 (
   reg         last_reg;
   reg         vld;
 
-  assign din_ready = (state==IDLE) ? ((~vld) || (vld && m_tready)) : 1'b0;
+  assign din_ready = (state == IDLE) && (~vld) && din_valid;
+  //assign din_ready = (state==IDLE) ? (((~vld) || (vld && m_tready)) && din_valid) : 1'b0;
   assign m_tdata   = (state==IDLE) ? shreg[7:0] : shreg[15:8];
   assign m_tvalid  = vld;
   assign m_tlast   = vld && (state==HI) && last_reg;
@@ -449,4 +468,5 @@ module stream16_to_axis8 (
       endcase
     end
   end
+
 endmodule

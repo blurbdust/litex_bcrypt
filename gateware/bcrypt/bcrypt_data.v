@@ -10,7 +10,7 @@
 
 `include "bcrypt.vh"
 
-`define SIM_TRACE 1
+//`define SIM_TRACE 1
 
 module bcrypt_data(
     input CLK,
