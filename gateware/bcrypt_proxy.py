@@ -1,31 +1,44 @@
 #!/usr/bin/env python3
 
-import os
-
-from migen import *
+#
+# This file is part of LiteX-Bcrypt.
+#
+# Bcrypt Proxy Wrapper.
+#
+# Lightweight LiteX/Migen wrapper around the Verilog `bcrypt_proxy` module. Exposes an 8-bit
+# streaming interface + minimal control/status to the SoC.
 
 from litex.gen import *
 
-# Bcrypt Proxy -------------------------------------------------------------------------------------
+# BcryptProxy --------------------------------------------------------------------------------------
 
 class BcryptProxy(LiteXModule):
+    """
+    BcryptProxy.
+
+    Thin LiteX wrapper for `bcrypt_proxy` (Verilog). One instance may encapsulate multiple backend
+    cores selected by parameters.
+    """
     def __init__(self, n_cores=1, dummy=0, cores_not_dummy=0, clk_domain="sys"):
-        # Proxy-side bus
-        self.din         = Signal(8)
-        self.ctrl        = Signal(2)
-        self.wr_en       = Signal()
+        # IOs.
+        # ----
+        self.din   = Signal(8)   # 8-bit data to proxy.
+        self.ctrl  = Signal(2)   # control (INIT/DATA/END).
+        self.wr_en = Signal()    # write strobe.
 
-        self.init_ready  = Signal()
-        self.crypt_ready = Signal()
+        self.init_ready  = Signal()  # proxy ready for INIT phase.
+        self.crypt_ready = Signal()  # proxy ready for DATA phase.
 
-        self.rd_en       = Signal()
-        self.empty       = Signal()
-        self.dout        = Signal()
+        self.rd_en = Signal()    # read strobe from proxy.
+        self.empty = Signal()    # output FIFO empty.
+        self.dout  = Signal()    # 1-bit serialized output.
 
-        # Control
-        self.mode_cmp    = Signal(reset=1)   # default: compare mode
+        # Control.
+        # --------
+        self.mode_cmp = Signal(reset=1)  # default to compare mode.
 
-        # Verilog proxy (instantiates n real cores internally).
+        # Instance.
+        # ---------
         self.specials += Instance("bcrypt_proxy",
             p_NUM_CORES       = n_cores,
             p_DUMMY           = dummy,
@@ -42,10 +55,12 @@ class BcryptProxy(LiteXModule):
 
             i_rd_en           = self.rd_en,
             o_empty           = self.empty,
-            o_dout            = self.dout
+            o_dout            = self.dout,
         )
 
+    # Sources --------------------------------------------------------------------------------------
     def add_sources(self):
+        """Register Verilog sources and include path for `bcrypt_proxy`."""
         from litex.gen import LiteXContext
         cur_dir = os.path.dirname(__file__)
         rtl_dir = os.path.join(cur_dir, "bcrypt")
