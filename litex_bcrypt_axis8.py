@@ -1,0 +1,131 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# litex_bcrypt_axis8.py — AXIS8 wrapper + proxy fanout
+
+import os
+from migen import *
+from litex.gen import LiteXModule
+from litex.soc.interconnect.csr import CSRStorage, CSRStatus, AutoCSR, CSRField
+from litex.soc.interconnect import stream
+
+from gateware.bcrypt_proxy import BcryptProxy
+
+class BcryptCoreAXIS8(LiteXModule, AutoCSR):
+    def __init__(self, platform, num_proxies=1, proxies_n_cores=None,
+                 proxies_dummy=None, proxies_bitmap=None, clk_domain="sys"):
+        """
+        num_proxies      : number of proxies exposed to the arbiter.
+        proxies_n_cores  : list of real cores per proxy (defaults to 1 each).
+        proxies_dummy    : list of 0/1 flags (1 = dummy proxy), optional.
+        proxies_bitmap   : list of 19-bit masks for CORES_NOT_DUMMY, optional.
+        """
+        if proxies_n_cores is None:
+            proxies_n_cores = [1]*num_proxies
+        if proxies_dummy is None:
+            proxies_dummy = [0]*num_proxies
+        if proxies_bitmap is None:
+            proxies_bitmap = [0]*num_proxies
+        assert len(proxies_n_cores) == num_proxies
+        assert len(proxies_dummy)   == num_proxies
+        assert len(proxies_bitmap)  == num_proxies
+
+        # AXI-Stream 8-bit + last
+        self.sink   = stream.Endpoint([('data', 8)])
+        self.source = stream.Endpoint([('data', 8)])
+
+        # CSRs
+        self._ctrl  = CSRStorage(fields=[
+            CSRField("mode_cmp",           size=1, reset=1),
+            CSRField("output_mode_limit",  size=1, reset=0),
+            CSRField("reg_output_limit",   size=1, reset=0),
+        ], reset=0)
+        self._app_status      = CSRStatus(8, name="app_status")
+        self._pkt_comm_status = CSRStatus(8, name="pkt_comm_status")
+        self._idle            = CSRStatus(fields=[CSRField("idle",  size=1)])
+        self._error           = CSRStatus(fields=[CSRField("error", size=1)])
+
+        # Wrapper RTL
+        platform.add_source("bcrypt_axis8_wrap.sv")
+
+        # Proxy-level bus between wrapper and proxies
+        core_din         = Signal(8)
+        core_ctrl        = Signal(2)
+        core_wr_en       = Signal(num_proxies)
+        core_rd_en       = Signal(num_proxies)
+        core_init_ready  = Signal(num_proxies)
+        core_crypt_ready = Signal(num_proxies)
+        core_empty       = Signal(num_proxies)
+        core_dout        = Signal(num_proxies)
+
+        # Wrapper
+        self.specials += Instance("bcrypt_axis8_wrap",
+            p_NUM_CORES = num_proxies,    # here "cores" == proxies for the arbiter
+
+            i_CORE_CLK  = ClockSignal(clk_domain),
+            i_CORE_RSTN = ~ResetSignal(clk_domain),
+
+            # AXIS IN
+            i_s_axis_tdata   = self.sink.data,
+            i_s_axis_tvalid  = self.sink.valid,
+            o_s_axis_tready  = self.sink.ready,
+            i_s_axis_tlast   = self.sink.last,
+
+            # AXIS OUT
+            o_m_axis_tdata   = self.source.data,
+            o_m_axis_tvalid  = self.source.valid,
+            i_m_axis_tready  = self.source.ready,
+            o_m_axis_tlast   = self.source.last,
+
+            # CSRs
+            i_mode_cmp          = self._ctrl.fields.mode_cmp,
+            i_output_mode_limit = self._ctrl.fields.output_mode_limit,
+            i_reg_output_limit  = self._ctrl.fields.reg_output_limit,
+
+            o_app_status        = self._app_status.status,
+            o_pkt_comm_status   = self._pkt_comm_status.status,
+            o_idle              = self._idle.fields.idle,
+            o_error_o           = self._error.fields.error,
+
+            # Proxy-level bus
+            o_core_din          = core_din,
+            o_core_ctrl         = core_ctrl,
+            o_core_wr_en        = core_wr_en,
+            i_core_init_ready   = core_init_ready,
+            i_core_crypt_ready  = core_crypt_ready,
+            o_core_rd_en        = core_rd_en,
+            i_core_empty        = core_empty,
+            i_core_dout         = core_dout
+        )
+
+        # Proxies
+        for i in range(num_proxies):
+            p = BcryptProxy(
+                n_cores        = proxies_n_cores[i],
+                dummy          = proxies_dummy[i],
+                cores_not_dummy= proxies_bitmap[i],
+                clk_domain     = clk_domain
+            )
+            setattr(self, f"proxy{i}", p)
+
+            self.comb += [
+                p.mode_cmp.eq(self._ctrl.fields.mode_cmp),
+
+                p.din.eq(core_din),
+                p.ctrl.eq(core_ctrl),
+                p.wr_en.eq(core_wr_en[i]),
+
+                p.rd_en.eq(core_rd_en[i]),
+
+                core_init_ready[i].eq(p.init_ready),
+                core_crypt_ready[i].eq(p.crypt_ready),
+                core_empty[i].eq(p.empty),
+                core_dout[i].eq(p.dout),
+            ]
+
+    def add_sources(self):
+        from litex.gen import LiteXContext
+        cur_dir = os.path.dirname(__file__)
+        for name in ["util", "pkt_comm", "bcrypt"]:
+            rtl_dir = os.path.join(cur_dir, f"gateware/{name}")
+            if os.path.isdir(rtl_dir):
+                LiteXContext.platform.add_verilog_include_path(rtl_dir)
+                LiteXContext.platform.add_source_dir(rtl_dir)
