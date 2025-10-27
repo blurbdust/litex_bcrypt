@@ -70,13 +70,11 @@ def build_word_list_payload(words):
         p += [ord(c) for c in w] + [0x00]  # C-style NUL termination
     return p
 
-def build_word_gen_payload(single_packet_id):
-    # Minimalistic control to pull one word from WORD_LIST for a given inpkt_id.
-    # Actual fields can vary per repo (ranges, masks, etc.). We put a tiny header:
-    #   - pkt_id (16b LE) of the WORD_LIST packet to consume from
-    #   - count  (16b LE) number of words to generate (1)
-    # Adjust this to your exact `word_gen_b` encoding.
-    return le16(single_packet_id) + le16(1)
+def build_word_gen_payload():
+    # num_ranges = 0
+    # num_generate = 0x00000000 (4 bytes)
+    # magic = 0xBB
+    return [0x00, 0x00, 0x00, 0x00, 0x00, 0xBB]
 
 class ByteStreamer(LiteXModule):
     def __init__(self, data):
@@ -193,9 +191,9 @@ class SimSoC(SoCMini):
         wl_hdr   = build_header(PKT_TYPE_WORD_LIST, wl_id, len(wl_pl))
         pkt_wl   = wl_hdr + wl_pl
 
-        wg_pl    = build_word_gen_payload(wl_id)
-        wg_hdr   = build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl))
-        pkt_wg   = wg_hdr + wg_pl
+        wg_pl  = build_word_gen_payload()
+        wg_hdr = build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl))
+        pkt_wg = wg_hdr + wg_pl
 
         # Streamers + collector
         self.tx_cmp = tx_cmp = ByteStreamer(pkt_cmp)

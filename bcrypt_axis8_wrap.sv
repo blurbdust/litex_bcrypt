@@ -195,6 +195,8 @@ module bcrypt_axis8_wrap #(
 
   assign ek_rd_en = ~ek_empty & ~bcrypt_data_ek_full;
 
+  wire bc_init_ready;
+
   bcrypt_data u_bcdata (
     .CLK(CLK), .pkt_id(pkt_id), .word_id(word_id_out), .gen_id(gen_id), .gen_end(gen_end),
     .ek_in(ek_dout), .ek_wr_en(ek_rd_en), .ek_full(bcrypt_data_ek_full), .ek_valid(~ek_empty),
@@ -202,7 +204,7 @@ module bcrypt_axis8_wrap #(
     .cmp_config_addr(cmp_config_addr), .cmp_config_data(cmp_config_dout),
     .dout(bcdata_dout), .ctrl(bcdata_ctrl), .error(bcdata_error),
     .bcdata_pkt_id(bcdata_pkt_id), .bcdata_gen_end(bcdata_gen_end),
-    .data_ready(bcdata_ready), .init_ready(),
+    .data_ready(bcdata_ready), .init_ready(bc_init_ready),
     .start_init_tx(start_init_tx), .start_data_tx(start_data_tx), .data_tx_done(), .init_tx_done()
   );
 
@@ -223,7 +225,7 @@ module bcrypt_axis8_wrap #(
   bcrypt_arbiter #(.NUM_CORES(NUM_CORES)) u_arb (
     .CLK(CLK), .mode_cmp(mode_cmp),
     .din(bcdata_dout), .ctrl(bcdata_ctrl),
-    .init_ready(1'b1), .data_ready(bcdata_ready),
+    .init_ready(bc_init_ready), .data_ready(bcdata_ready),
     .start_init_tx(start_init_tx), .start_data_tx(start_data_tx),
     .bcdata_gen_end(bcdata_gen_end), .bcdata_pkt_id(bcdata_pkt_id),
     .cmp_data(cmp_data), .cmp_start(cmp_start), .cmp_found(cmp_found), .cmp_finished(cmp_finished), .cmp_hash_num(cmp_hash_num),
@@ -245,12 +247,19 @@ module bcrypt_axis8_wrap #(
   wire outpkt_full = 1'b0;
   assign arbiter_rd_en = ~arbiter_empty & ~outpkt_full;
 
-  outpkt_bcrypt #(.HASH_NUM_MSB(`HASH_NUM_MSB), .SIMULATION(SIMULATION)) u_outpkt (
-    .CLK(CLK), .din(arbiter_dout), .rd_addr(arbiter_rd_addr), .source_not_empty(~arbiter_empty),
-    .wr_en(), .full(outpkt_full),
-    .pkt_type(outpkt_type), .pkt_id(arbiter_pkt_id), .hash_num(hash_num), .num_processed(num_processed),
-    .dout(dout16), .rd_en(outpkt_rd_en), .empty(outpkt_empty), .pkt_end_out(outpkt_last)
-  );
+outpkt_bcrypt #(.HASH_NUM_MSB(`HASH_NUM_MSB), .SIMULATION(SIMULATION)) u_outpkt (
+  .CLK(CLK),
+  .din(arbiter_dout), .rd_addr(arbiter_rd_addr),
+  .source_not_empty(~arbiter_empty),
+  .wr_en(arbiter_rd_en),
+  .full(outpkt_full),
+
+  .pkt_type(outpkt_type), .pkt_id(arbiter_pkt_id),
+  .hash_num(hash_num), .num_processed(num_processed),
+
+  .dout(dout16), .rd_en(outpkt_rd_en),
+  .empty(outpkt_empty), .pkt_end_out(outpkt_last)
+);
 
   // STATUS/IDLE/ERROR
   assign pkt_comm_status = {err_cmp_config, err_word_gen_conf, err_template, err_word_list_count,
