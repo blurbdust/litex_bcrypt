@@ -19,7 +19,7 @@ class BcryptProxy(LiteXModule):
     Thin LiteX wrapper for `bcrypt_proxy` (Verilog). One instance may encapsulate multiple backend
     cores selected by parameters.
     """
-    def __init__(self, n_cores=1, dummy=0, cores_not_dummy=0, clk_domain="sys"):
+    def __init__(self, n_cores=1, dummy=0, cores_not_dummy=0):
         # IOs.
         # ----
         self.din   = Signal(8)   # 8-bit data to proxy.
@@ -44,7 +44,7 @@ class BcryptProxy(LiteXModule):
             p_DUMMY           = dummy,
             p_CORES_NOT_DUMMY = cores_not_dummy,
 
-            i_CLK             = ClockSignal(clk_domain),
+            i_CLK             = ClockSignal("sys"),
             i_mode_cmp        = self.mode_cmp,
 
             i_din             = self.din,

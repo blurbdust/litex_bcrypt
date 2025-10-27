@@ -1,51 +1,70 @@
-# SPDX-License-Identifier: BSD-2-Clause
-# litex_bcrypt_axis8.py — AXIS8 wrapper + proxy fanout
+#!/usr/bin/env python3
+
+#
+# This file is part of LiteX-Bcrypt.
+#
+# Bcrypt AXIS8 Wrapper + Proxy Fanout.
+#
+# LiteX/Migen wrapper instantiating the Verilog AXIS8 top (bcrypt_axis_8b) and a set of BcryptProxy
+# instances. Exposes 8-bit AXI-Stream sink/source and minimal CSRs.
 
 import os
+
 from migen import *
-from litex.gen import LiteXModule
-from litex.soc.interconnect.csr import CSRStorage, CSRStatus, AutoCSR, CSRField
+
+from litex.gen import *
+from litex.soc.interconnect.csr import *
+
 from litex.soc.interconnect import stream
 
 from gateware.bcrypt_proxy import BcryptProxy
 
-# Bcrypt Wrapper -----------------------------------------------------------------------------------
+# BcryptWrapper ------------------------------------------------------------------------------------
 
 class BcryptWrapper(LiteXModule):
-    def __init__(self, platform, num_proxies=1, proxies_n_cores=None,
-                 proxies_dummy=None, proxies_bitmap=None, clk_domain="sys"):
-        """
-        num_proxies      : number of proxies exposed to the arbiter.
-        proxies_n_cores  : list of real cores per proxy (defaults to 1 each).
-        proxies_dummy    : list of 0/1 flags (1 = dummy proxy), optional.
-        proxies_bitmap   : list of 19-bit masks for CORES_NOT_DUMMY, optional.
-        """
-        if proxies_n_cores is None:
-            proxies_n_cores = [1]*num_proxies
-        if proxies_dummy is None:
-            proxies_dummy = [0]*num_proxies
-        if proxies_bitmap is None:
-            proxies_bitmap = [0]*num_proxies
+    """
+    Bcrypt AXIS8 Wrapper.
+
+    Parameters
+    ----------
+    platform         : LiteX platform (used to register Verilog sources).
+    num_proxies      : Number of proxies exposed to the arbiter (default: 1).
+    proxies_n_cores  : List of real cores per proxy (default: [1] * num_proxies).
+    proxies_dummy    : List of 0/1 flags (1 = dummy proxy), optional.
+    proxies_bitmap   : List of masks for CORES_NOT_DUMMY, optional.
+    clk_domain       : Clock domain name (default: "sys").
+    """
+    def __init__(self, platform,
+        num_proxies     = 1,
+        proxies_n_cores = None,
+        proxies_dummy   = None,
+        proxies_bitmap  = None):
+
+        # Defaults / checks ------------------------------------------------------------------------
+        if proxies_n_cores is None: proxies_n_cores = [1]*num_proxies
+        if proxies_dummy   is None: proxies_dummy   = [0]*num_proxies
+        if proxies_bitmap  is None: proxies_bitmap  = [0]*num_proxies
         assert len(proxies_n_cores) == num_proxies
         assert len(proxies_dummy)   == num_proxies
         assert len(proxies_bitmap)  == num_proxies
 
-        # AXI-Stream 8-bit + last
-        self.sink   = stream.Endpoint([('data', 8)])
-        self.source = stream.Endpoint([('data', 8)])
+        # AXI-Stream 8-bit -------------------------------------------------------------------------
+        self.sink   = stream.Endpoint([("data", 8)])  # IN  (data/valid/ready/last)
+        self.source = stream.Endpoint([("data", 8)])  # OUT (data/valid/ready/last)
 
-        # CSRs
-        self._ctrl  = CSRStorage(fields=[
-            CSRField("mode_cmp",           size=1, reset=1),
-            CSRField("output_mode_limit",  size=1, reset=0),
-            CSRField("reg_output_limit",   size=1, reset=0),
-        ], reset=0)
-        self._app_status      = CSRStatus(8, name="app_status")
-        self._pkt_comm_status = CSRStatus(8, name="pkt_comm_status")
+        # CSRs -------------------------------------------------------------------------------------
+        self._ctrl = CSRStorage(fields=[
+            CSRField("mode_cmp",          size=1, reset=1),
+            CSRField("output_mode_limit", size=1, reset=0),
+            CSRField("reg_output_limit",  size=1, reset=0),
+        ])
+
+        self._app_status      = CSRStatus(8)
+        self._pkt_comm_status = CSRStatus(8)
         self._idle            = CSRStatus(fields=[CSRField("idle",  size=1)])
         self._error           = CSRStatus(fields=[CSRField("error", size=1)])
 
-        # Proxy-level bus between wrapper and proxies
+        # Proxy fanout bus -------------------------------------------------------------------------
         core_din         = Signal(8)
         core_ctrl        = Signal(2)
         core_wr_en       = Signal(num_proxies)
@@ -55,36 +74,38 @@ class BcryptWrapper(LiteXModule):
         core_empty       = Signal(num_proxies)
         core_dout        = Signal(num_proxies)
 
-        # Wrapper
+        # Verilog AXIS8 wrapper --------------------------------------------------------------------
         self.specials += Instance("bcrypt_axis_8b",
-            p_NUM_CORES = num_proxies,    # here "cores" == proxies for the arbiter
+            # Parameter.
+            p_NUM_CORES = num_proxies,
 
-            i_CORE_CLK  = ClockSignal(clk_domain),
-            i_CORE_RSTN = ~ResetSignal(clk_domain),
+            # Clk/Rst.
+            i_CORE_CLK  = ClockSignal("sys"),
+            i_CORE_RSTN = ~ResetSignal("sys"),
 
-            # AXIS IN
-            i_s_axis_tdata   = self.sink.data,
-            i_s_axis_tvalid  = self.sink.valid,
-            o_s_axis_tready  = self.sink.ready,
-            i_s_axis_tlast   = self.sink.last,
+            # AXIS In.
+            i_s_axis_tdata  = self.sink.data,
+            i_s_axis_tvalid = self.sink.valid,
+            o_s_axis_tready = self.sink.ready,
+            i_s_axis_tlast  = self.sink.last,
 
-            # AXIS OUT
-            o_m_axis_tdata   = self.source.data,
-            o_m_axis_tvalid  = self.source.valid,
-            i_m_axis_tready  = self.source.ready,
-            o_m_axis_tlast   = self.source.last,
+            # AXIS Out.
+            o_m_axis_tdata  = self.source.data,
+            o_m_axis_tvalid = self.source.valid,
+            i_m_axis_tready = self.source.ready,
+            o_m_axis_tlast  = self.source.last,
 
-            # CSRs
+            # CSRs.
             i_mode_cmp          = self._ctrl.fields.mode_cmp,
             i_output_mode_limit = self._ctrl.fields.output_mode_limit,
             i_reg_output_limit  = self._ctrl.fields.reg_output_limit,
 
-            o_app_status        = self._app_status.status,
-            o_pkt_comm_status   = self._pkt_comm_status.status,
-            o_idle              = self._idle.fields.idle,
-            o_error_o           = self._error.fields.error,
+            o_app_status      = self._app_status.status,
+            o_pkt_comm_status = self._pkt_comm_status.status,
+            o_idle            = self._idle.fields.idle,
+            o_error_o         = self._error.fields.error,
 
-            # Proxy-level bus
+            # Proxy-level bus.
             o_core_din          = core_din,
             o_core_ctrl         = core_ctrl,
             o_core_wr_en        = core_wr_en,
@@ -92,35 +113,38 @@ class BcryptWrapper(LiteXModule):
             i_core_crypt_ready  = core_crypt_ready,
             o_core_rd_en        = core_rd_en,
             i_core_empty        = core_empty,
-            i_core_dout         = core_dout
+            i_core_dout         = core_dout,
         )
 
-        # Proxies
+        # Proxies ----------------------------------------------------------------------------------
+
         for i in range(num_proxies):
             p = BcryptProxy(
                 n_cores        = proxies_n_cores[i],
                 dummy          = proxies_dummy[i],
                 cores_not_dummy= proxies_bitmap[i],
-                clk_domain     = clk_domain
             )
-            setattr(self, f"proxy{i}", p)
-
+            self.add_module(name=f"proxy{i}", module=p)
             self.comb += [
+                # Mode.
                 p.mode_cmp.eq(self._ctrl.fields.mode_cmp),
 
+                # TX to proxy.
                 p.din.eq(core_din),
                 p.ctrl.eq(core_ctrl),
                 p.wr_en.eq(core_wr_en[i]),
 
+                # RX from proxy.
                 p.rd_en.eq(core_rd_en[i]),
-
                 core_init_ready[i].eq(p.init_ready),
                 core_crypt_ready[i].eq(p.crypt_ready),
                 core_empty[i].eq(p.empty),
                 core_dout[i].eq(p.dout),
             ]
 
+    # Sources --------------------------------------------------------------------------------------
     def add_sources(self):
+        """Register Verilog include paths and source dirs used by the wrapper."""
         from litex.gen import LiteXContext
         cur_dir = os.path.dirname(__file__)
         for name in ["util", "pkt_comm", "bcrypt"]:
