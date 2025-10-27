@@ -82,67 +82,63 @@ def build_word_gen_payload():
     # num_ranges=0, num_generate=1, magic=0xBB
     return [0x00, 0x01, 0x00, 0x00, 0x00, 0xBB]
 
-# AXI8 Memory Streamer (async-read, synthesizable) -------------------------------------------------
+# AXI8 Memory Streamer -----------------------------------------------------------------------------
 
 class AXI8MemStreamer(LiteXModule):
     """
-    Streams a byte array from an async-read Memory on an 8-bit AXI-Stream.
-    - Start on rising edge of `start`.
-    - No bubbles (combinational read path).
-    - Stops after last byte and raises `done`.
+    Streams `data_bytes` on an 8-bit AXI-Stream once per `start`.
+    - Async-read Memory (no bubbles).
+    - 2 states (IDLE/RUN).
+    - `last` = (addr == depth-1) computed combinationally.
+    - `done` pulses for 1 cycle on the final beat.
     """
     def __init__(self, data_bytes, clk_domain="sys"):
+        assert len(data_bytes) > 0
+
         self.source = stream.Endpoint([("data", 8)])
-        self.start  = Signal(reset=0)
-        self.done   = Signal(reset=0)
+        self.start  = Signal()  # pulse or level
+        self.done   = Signal()  # 1-cycle pulse at end
 
         depth = len(data_bytes)
         mem   = Memory(8, depth, init=data_bytes)
-        rp    = mem.get_port(async_read=True)  # combinational read: rp.dat_r = mem[rp.adr]
+        rp    = mem.get_port(async_read=True)
         self.specials += mem, rp
 
-        RUN, IDLE = 1, 0
-        running  = Signal(reset=0)
-        addr     = Signal(max=depth)
-        last     = Signal()
+        addr    = Signal(max=depth)
+        is_last = Signal()  # purely combinational reflection of addr
 
-        start_d  = Signal()
-        start_p  = Signal()
-        self.comb += start_p.eq(self.start & ~start_d)
-
-        # Drive AXIS from async read.
+        # Async read + combinational last flag.
         self.comb += [
-            rp.adr.eq(addr),
-            self.source.data.eq(rp.dat_r),
-            self.source.last.eq(last),
+            rp.adr            .eq(addr),
+            self.source.data  .eq(rp.dat_r),
+            is_last           .eq(addr == (depth - 1)),
+            self.source.last  .eq(is_last),
         ]
 
-        self.sync += [
-            # defaults
-            self.done.eq(0),
-            self.source.valid.eq(0),
-            start_d.eq(self.start),
+        # FSM: IDLE -> RUN -> IDLE
+        fsm = FSM(reset_state="IDLE")
+        self.submodules += fsm
 
-            If(running,
-                # Present current byte.
-                self.source.valid.eq(1),
-                last.eq(addr == (depth - 1)),
-                If(self.source.valid & self.source.ready,
-                    If(last,
-                        running.eq(0),
-                        self.done.eq(1)
-                    ).Else(
-                        addr.eq(addr + 1)
-                    )
-                )
-            ).Else(
-                If(start_p,
-                    running.eq(1),
-                    addr.eq(0),
-                    last.eq(depth == 1)
+        fsm.act("IDLE",
+            self.source.valid.eq(0),
+            self.done.eq(0),
+            If(self.start,
+                NextValue(addr, 0),
+                NextState("RUN")
+            )
+        )
+
+        fsm.act("RUN",
+            self.source.valid.eq(1),
+            If(self.source.ready,
+                If(is_last,
+                    self.done.eq(1),
+                    NextState("IDLE")
+                ).Else(
+                    NextValue(addr, addr + 1)
                 )
             )
-        ]
+        )
 
 # Simulation SoC -----------------------------------------------------------------------------------
 
