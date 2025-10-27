@@ -7,7 +7,7 @@
 `include "main.vh"
 `include "bcrypt.vh"
 
-`define SIM_TRACE 1
+//`define SIM_TRACE 1
 
 module bcrypt_axis8_wrap #(
   parameter int NUM_CORES      = 12,
@@ -116,6 +116,17 @@ module bcrypt_axis8_wrap #(
     .err_pkt_version(err_pkt_version), .err_pkt_type(err_inpkt_type),
     .err_pkt_len(err_inpkt_len), .err_pkt_checksum(err_inpkt_checksum)
   );
+
+reg [7:0] dbg_cnt;
+always @(posedge CLK) begin
+  if (!RSTN) dbg_cnt <= 0;
+  else if (inpkt_data && rd_en && dbg_cnt < 32) begin
+    $display("[%0t] CMP_PAY[%0d] = 0x%02x (type=%0d id=0x%04x)",
+      $time, dbg_cnt, din, inpkt_type, inpkt_id);
+    dbg_cnt <= dbg_cnt + 1;
+  end
+  if (inpkt_end) dbg_cnt <= 0;
+end
 
 `ifdef SIM_TRACE
   // Header + errors

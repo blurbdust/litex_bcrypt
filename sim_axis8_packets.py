@@ -43,22 +43,28 @@ def le32(x): return [ (x >> (8*i)) & 0xFF for i in range(4) ]
 def build_header(pkt_type, pkt_id, payload_len):
     return [PKT_VERSION, pkt_type] + le16(pkt_id) + le16(payload_len)
 
-def build_cmp_config_payload(iter_count, salt16_le_bytes):
-    # Heuristic mapping:
-    #   - iter_count : 1 * 32b
-    #   - salt       : 4 * 32b (16 bytes), already LE-packed by caller
-    #   - cmp_data   : 5 * 32b (zeros if not matching on-FPGA)
-    # Total: 10 * 32b = 40 bytes
-    assert len(salt16_le_bytes) == 16
+def build_cmp_config_payload_bcrypt(iter_count, salt16_bytes, subtype=b"b", hashes=None):
+    """
+    bcrypt_cmp_config format (exactly as RTL expects):
+      salt[16] + subtype[1] + iter_count[4-LE] + hash_count[2-LE]
+      + (hash_count * 4 LE bytes) + 0xCC
+    """
+    assert isinstance(salt16_bytes, (bytes, bytearray)) and len(salt16_bytes) == 16
+    assert subtype in (b"a", b"b", b"x", b"y")
+    if hashes is None:
+        hashes = []
+
+    def le16(x): return [x & 0xFF, (x >> 8) & 0xFF]
+    def le32(x): return [(x >> (8*i)) & 0xFF for i in range(4)]
+
     payload = []
-    payload += le32(iter_count)
-    # pack the 16 salt bytes into 4 LE words
-    for i in range(4):
-        b0,b1,b2,b3 = salt16_le_bytes[4*i:4*i+4]
-        payload += [b0, b1, b2, b3]
-    # cmp_data[5] zeros
-    for _ in range(5):
-        payload += le32(0)
+    payload += list(salt16_bytes)          # 16
+    payload += [subtype[0]]                # 1
+    payload += le32(iter_count)            # 4 (LE)
+    payload += le16(len(hashes))           # 2 (LE)
+    for w in hashes:                       # N * 4 (LE)
+        payload += le32(w & 0x7FFFFFFF)
+    payload += [0xCC]                      # magic
     return payload
 
 def build_word_list_payload(words):
@@ -181,10 +187,11 @@ class SimSoC(SoCMini):
         wg_id   = 0x0003
 
         iter_count = 5
-        salt16     = [0x00]*16
+        salt16     = bytes([0x00]*16)
+        hashes     = [0]  # since mode_cmp=1 by default, provide >=1 comparator word
 
-        cmp_pl   = build_cmp_config_payload(iter_count, salt16)
-        cmp_hdr  = build_header(PKT_TYPE_CMP_CONFIG, cmp_id, len(cmp_pl))
+        cmp_pl   = build_cmp_config_payload_bcrypt(iter_count, salt16, subtype=b"b", hashes=hashes)
+        cmp_hdr  = build_header(PKT_TYPE_CMP_CONFIG, 0x0001, len(cmp_pl))
         pkt_cmp  = cmp_hdr + cmp_pl
 
         wl_pl    = build_word_list_payload(["pass"])
