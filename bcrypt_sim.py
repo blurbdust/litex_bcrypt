@@ -193,7 +193,7 @@ class SimSoC(SoCMini):
             bcrypt.source.ready.eq(1),
         ]
 
-        # Simple sequencer -----------------------------------------------------------------------
+        # AXIS In Sequencer ------------------------------------------------------------------------
         self.fsm = fsm = FSM(reset_state="SEND_CMP")
         fsm.act("SEND_CMP",
             tx_cmp.start.eq(1),
@@ -208,6 +208,18 @@ class SimSoC(SoCMini):
             If(tx_wg.done, NextState("DONE"))
         )
         fsm.act("DONE")
+
+        # AXIS Out Display -------------------------------------------------------------------------
+        out_byte_idx = Signal(8)
+        self.sync += [
+            If(bcrypt.source.valid & bcrypt.source.ready,
+                Display("AXIS.OUT byte=0x%02x last=%d", bcrypt.source.data, bcrypt.source.last),
+                If(bcrypt.source.last,
+                    Display("AXIS.OUT <END>")
+                ),
+                out_byte_idx.eq(out_byte_idx + 1)
+            )
+        ]
 
 # Build / Main -------------------------------------------------------------------------------------
 
