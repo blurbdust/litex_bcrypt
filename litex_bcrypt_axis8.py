@@ -59,7 +59,6 @@ class BcryptCoreAXIS8(LiteXModule, AutoCSR):
         # Wrapper
         self.specials += Instance("bcrypt_axis8_wrap",
             p_NUM_CORES = num_proxies,    # here "cores" == proxies for the arbiter
-            p_SIMULATION = 1,
 
             i_CORE_CLK  = ClockSignal(clk_domain),
             i_CORE_RSTN = ~ResetSignal(clk_domain),

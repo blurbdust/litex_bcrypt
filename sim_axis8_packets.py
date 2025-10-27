@@ -73,6 +73,18 @@ def build_cmp_config_payload_bcrypt(iter_count, salt16_bytes, subtype=b"b", hash
     payload += [0xCC]                      # magic
     return payload
 
+def add_checksums_around_payload(header_bytes, payload_bytes):
+    # 32-bit little-endian sum of 32-bit little-endian words (pad with zeros)
+    def csum(bs):
+        s = 0
+        for i in range(0, len(bs), 4):
+            w = bs[i:i+4] + [0]*(4 - (len(bs[i:i+4])%4))
+            s = (s + (w[0] | (w[1]<<8) | (w[2]<<16) | (w[3]<<24))) & 0xFFFFFFFF
+        s ^= 0xFFFFFFFF
+        return [s & 0xFF, (s>>8)&0xFF, (s>>16)&0xFF, (s>>24)&0xFF]
+
+    return header_bytes + csum(header_bytes) + payload_bytes + csum(payload_bytes)
+
 def build_word_list_payload(words):
     p = []
     for w in words:
@@ -80,43 +92,54 @@ def build_word_list_payload(words):
     return p
 
 def build_word_gen_payload():
-    # num_ranges = 0, num_generate = 0x00000000, magic = 0xBB
-    return [0x00, 0x00, 0x00, 0x00, 0x00, 0xBB]
+    # num_ranges = 0x00
+    # num_generate = 1 (LE 32-bit)
+    # magic = 0xBB
+    return [0x00, 0x01, 0x00, 0x00, 0x00, 0xBB]
 
 class ByteStreamer(LiteXModule):
     def __init__(self, data):
         self.source = stream.Endpoint([('data', 8)])
-        self.start  = Signal(reset=0)
+        self.start  = Signal(reset=0)   # external “request”
         self.done   = Signal(reset=0)
 
         n = len(data)
         mem = Array([Signal(8, reset=d) for d in data])
         idx = Signal(max=n+1)
-        running = Signal(reset=0)
+        running   = Signal(reset=0)
+        start_d   = Signal()            # registered start
+        start_p   = Signal()            # 1-cycle pulse on rising edge
 
-        self.comb += self.source.data.eq(mem[idx])
-        self.comb += self.source.last.eq(idx == (n-1))
+        # present data/last
+        self.comb += [
+            self.source.data.eq(mem[idx]),
+            self.source.last.eq(idx == (n-1)),
+            start_p.eq(self.start & ~start_d),
+        ]
 
         self.sync += [
+            start_d.eq(self.start),
             self.done.eq(0),
-            If(self.start & ~running,
-               running.eq(1),
-               idx.eq(0)
+
+            If(start_p & ~running,         # only react to rising edge
+                running.eq(1),
+                idx.eq(0)
             ).Elif(running,
-               self.source.valid.eq(1),
-               If(self.source.valid & self.source.ready,
-                  If(idx == (n-1),
-                      self.source.valid.eq(0),
-                      self.done.eq(1),
-                      running.eq(0)
-                  ).Else(
-                      idx.eq(idx + 1)
-                  )
-               )
+                self.source.valid.eq(1),
+                If(self.source.valid & self.source.ready,
+                    If(idx == (n-1),
+                        self.source.valid.eq(0),
+                        self.done.eq(1),
+                        running.eq(0)
+                    ).Else(
+                        idx.eq(idx + 1)
+                    )
+                )
             ).Else(
-               self.source.valid.eq(0)
+                self.source.valid.eq(0)
             )
         ]
+
 
 class WordCollector(LiteXModule):
     def __init__(self, nwords=8):
@@ -190,17 +213,17 @@ class SimSoC(SoCMini):
         salt16     = bytes(range(0x10))
         hashes     = [0]  # at least one
 
-        cmp_pl   = build_cmp_config_payload_bcrypt(iter_count, salt16, subtype=b"b", hashes=hashes)
-        cmp_hdr  = build_header(PKT_TYPE_CMP_CONFIG, cmp_id, len(cmp_pl))
-        pkt_cmp  = add_checksums_around_payload(cmp_hdr, cmp_pl)
+        cmp_pl  = build_cmp_config_payload_bcrypt(iter_count, salt16, subtype=b"b", hashes=[0])
+        cmp_hdr = build_header(PKT_TYPE_CMP_CONFIG, 0x0001, len(cmp_pl))
+        pkt_cmp = add_checksums_around_payload(cmp_hdr, cmp_pl)
 
-        wl_pl    = build_word_list_payload(["pass"])
-        wl_hdr   = build_header(PKT_TYPE_WORD_LIST, wl_id, len(wl_pl))
-        pkt_wl   = add_checksums_around_payload(wl_hdr, wl_pl)
+        wl_pl   = build_word_list_payload(["pass"])
+        wl_hdr  = build_header(PKT_TYPE_WORD_LIST, 0x0002, len(wl_pl))
+        pkt_wl  = add_checksums_around_payload(wl_hdr, wl_pl)
 
-        wg_pl    = build_word_gen_payload()
-        wg_hdr   = build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl))
-        pkt_wg   = add_checksums_around_payload(wg_hdr, wg_pl)
+        wg_pl   = build_word_gen_payload()
+        wg_hdr  = build_header(PKT_TYPE_WORD_GEN, 0x0003, len(wg_pl))
+        pkt_wg  = add_checksums_around_payload(wg_hdr, wg_pl)
 
         # (Optional) quick dumps
         def dump_bytes(lbl, bb, n=64):
@@ -209,6 +232,8 @@ class SimSoC(SoCMini):
         dump_bytes("PKT_CMP", pkt_cmp)
         dump_bytes("PKT_WL ", pkt_wl)
         dump_bytes("PKT_WG ", pkt_wg)
+
+        #exit()
 
         # Streamers + collector
         self.tx_cmp = tx_cmp = ByteStreamer(pkt_cmp)
