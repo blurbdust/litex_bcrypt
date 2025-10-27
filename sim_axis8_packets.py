@@ -154,6 +154,7 @@ class Platform(SimPlatform):
 class SimSoC(SoCMini):
     def __init__(self):
         platform     = Platform()
+        self.comb += platform.trace.eq(1) # Always enable tracing.
         sys_clk_freq = int(50e6)
         SoCMini.__init__(self, platform, sys_clk_freq)
         self.crg = CRG(platform.request("sys_clk"))
