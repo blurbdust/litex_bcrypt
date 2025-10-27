@@ -4,9 +4,9 @@
 # Bcrypt core wrapped in LiteX.
 #
 # High-level:
-# - Streams three packets into the wrapper: CMP_CONFIG → WORD_LIST → WORD_GEN.
-# - Packets stored in synthesizable Memories (async-read).
-# - AXI egress is always-ready; bytes printed with LiteX Display (in sync).
+# - Single shared byte Memory holds all 3 packets (CMP_CONFIG / WORD_LIST / WORD_GEN).
+# - One AXI8 streamer: start from (base) for (size) bytes; async-read; 2-state FSM.
+# - AXI egress always-ready; bytes printed with LiteX Display (in sync).
 
 import argparse
 
@@ -82,48 +82,53 @@ def build_word_gen_payload():
     # num_ranges=0, num_generate=1, magic=0xBB
     return [0x00, 0x01, 0x00, 0x00, 0x00, 0xBB]
 
-# AXI8 Memory Streamer -----------------------------------------------------------------------------
+# AXI8 Memory Streamer (range-driven) --------------------------------------------------------------
 
 class AXI8MemStreamer(LiteXModule):
     """
-    Streams `data_bytes` on an 8-bit AXI-Stream once per `start`.
-    - Async-read Memory (no bubbles).
-    - 2 states (IDLE/RUN).
-    - `last` = (addr == depth-1) computed combinationally.
-    - `done` pulses for 1 cycle on the final beat.
+    Stream a sub-range of a shared byte Memory on AXI-Stream(8).
+    - Inputs: base (start addr), size (bytes), start pulse/level.
+    - Async-read Memory port (no bubbles).
+    - 2-state FSM (IDLE/RUN).
+    - last = (addr == end) combinational; done pulses on final beat.
     """
-    def __init__(self, data_bytes, clk_domain="sys"):
-        assert len(data_bytes) > 0
-
+    def __init__(self, mem, depth, clk_domain="sys"):
         self.source = stream.Endpoint([("data", 8)])
-        self.start  = Signal()  # pulse or level
-        self.done   = Signal()  # 1-cycle pulse at end
+        self.start  = Signal()
+        self.base   = Signal(max=depth)
+        self.size   = Signal(max=depth)
+        self.done   = Signal()
 
-        depth = len(data_bytes)
-        mem   = Memory(8, depth, init=data_bytes)
-        rp    = mem.get_port(async_read=True)
-        self.specials += mem, rp
+        # Read port.
+        rp = mem.get_port(async_read=True)
+        self.specials += rp
 
-        addr    = Signal(max=depth)
-        is_last = Signal()  # purely combinational reflection of addr
+        # Latched params on start (so caller can reprogram while streaming).
+        base_l = Signal.like(self.base)
+        size_l = Signal.like(self.size)
 
-        # Async read + combinational last flag.
+        addr   = Signal(max=depth)
+        end    = Signal(max=depth)
+        is_last= Signal()
+
         self.comb += [
-            rp.adr            .eq(addr),
-            self.source.data  .eq(rp.dat_r),
-            is_last           .eq(addr == (depth - 1)),
-            self.source.last  .eq(is_last),
+            rp.adr           .eq(addr),
+            self.source.data .eq(rp.dat_r),
+            self.source.last .eq(is_last),
+            is_last          .eq(addr == end),
         ]
 
-        # FSM: IDLE -> RUN -> IDLE
         fsm = FSM(reset_state="IDLE")
         self.submodules += fsm
 
         fsm.act("IDLE",
             self.source.valid.eq(0),
             self.done.eq(0),
-            If(self.start,
-                NextValue(addr, 0),
+            If(self.start & (self.size != 0),
+                NextValue(base_l, self.base),
+                NextValue(size_l, self.size),
+                NextValue(addr,   self.base),
+                NextValue(end,    self.base + self.size - 1),
                 NextState("RUN")
             )
         )
@@ -167,7 +172,7 @@ class SimSoC(SoCMini):
         salt16     = bytes(range(0x10))
         hashes     = [0]
 
-        cmp_pl  = build_cmp_config_payload_bcrypt(iter_count, salt16, b"b", hashes)
+        cmp_pl  = build_cmp_config_payload_bcrypt(iter_count,     salt16, b"b", hashes)
         pkt_cmp = add_checksums_around_payload(build_header(PKT_TYPE_CMP_CONFIG, cmp_id, len(cmp_pl)), cmp_pl)
 
         wl_pl   = build_word_list_payload(["pass"])
@@ -176,25 +181,29 @@ class SimSoC(SoCMini):
         wg_pl   = build_word_gen_payload()
         pkt_wg  = add_checksums_around_payload(build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl)), wg_pl)
 
-        # Streamers (async-read, no bubbles) ------------------------------------------------------
-        self.tx_cmp = tx_cmp = AXI8MemStreamer(pkt_cmp)
-        self.tx_wl  = tx_wl  = AXI8MemStreamer(pkt_wl)
-        self.tx_wg  = tx_wg  = AXI8MemStreamer(pkt_wg)
+        # Shared Memory layout (contiguous) -------------------------------------------------------
+        off_cmp = 0
+        len_cmp = len(pkt_cmp)
+        off_wl  = off_cmp + len_cmp
+        len_wl  = len(pkt_wl)
+        off_wg  = off_wl  + len_wl
+        len_wg  = len(pkt_wg)
+
+        all_bytes = pkt_cmp + pkt_wl + pkt_wg
+        depth     = len(all_bytes)
+
+        mem = Memory(8, depth, init=all_bytes)
+        self.specials += mem
+
+        # Single range-driven streamer -------------------------------------------------------------
+        self.tx = tx = AXI8MemStreamer(mem, depth)
 
         # AXIS IN wiring --------------------------------------------------------------------------
         self.comb += [
-            bcrypt.sink.valid.eq(tx_cmp.source.valid | tx_wl.source.valid | tx_wg.source.valid),
-            bcrypt.sink.data .eq(
-                Mux(tx_cmp.source.valid, tx_cmp.source.data,
-                Mux(tx_wl .source.valid, tx_wl .source.data, tx_wg.source.data))
-            ),
-            bcrypt.sink.last .eq(
-                Mux(tx_cmp.source.valid, tx_cmp.source.last,
-                Mux(tx_wl .source.valid, tx_wl .source.last, tx_wg.source.last))
-            ),
-            tx_cmp.source.ready.eq(bcrypt.sink.ready & tx_cmp.source.valid),
-            tx_wl .source.ready.eq(bcrypt.sink.ready & ~tx_cmp.source.valid & tx_wl.source.valid),
-            tx_wg .source.ready.eq(bcrypt.sink.ready & ~tx_cmp.source.valid & ~tx_wl.source.valid & tx_wg.source.valid),
+            bcrypt.sink.valid.eq(tx.source.valid),
+            bcrypt.sink.data .eq(tx.source.data),
+            bcrypt.sink.last .eq(tx.source.last),
+            tx.source.ready  .eq(bcrypt.sink.ready),
 
             # AXIS OUT: always ready
             bcrypt.source.ready.eq(1),
@@ -203,16 +212,22 @@ class SimSoC(SoCMini):
         # AXIS In Sequencer -----------------------------------------------------------------------
         self.fsm = fsm = FSM(reset_state="SEND_CMP")
         fsm.act("SEND_CMP",
-            tx_cmp.start.eq(1),
-            If(tx_cmp.done, NextState("SEND_WL"))
+            NextValue(tx.base, off_cmp),
+            NextValue(tx.size, len_cmp),
+            tx.start.eq(1),
+            If(tx.done, NextState("SEND_WL"))
         )
         fsm.act("SEND_WL",
-            tx_wl.start.eq(1),
-            If(tx_wl.done, NextState("SEND_WG"))
+            NextValue(tx.base, off_wl),
+            NextValue(tx.size, len_wl),
+            tx.start.eq(1),
+            If(tx.done, NextState("SEND_WG"))
         )
         fsm.act("SEND_WG",
-            tx_wg.start.eq(1),
-            If(tx_wg.done, NextState("DONE"))
+            NextValue(tx.base, off_wg),
+            NextValue(tx.size, len_wg),
+            tx.start.eq(1),
+            If(tx.done, NextState("DONE"))
         )
         fsm.act("DONE")
 
@@ -221,7 +236,6 @@ class SimSoC(SoCMini):
         self.sync += [
             If(bcrypt.source.valid & bcrypt.source.ready,
                 Display("AXIS.OUT byte=0x%02x last=%d", bcrypt.source.data, bcrypt.source.last),
-                If(bcrypt.source.last, Display("AXIS.OUT <END>")),
                 out_idx.eq(out_idx + 1)
             )
         ]
