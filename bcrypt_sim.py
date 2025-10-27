@@ -127,34 +127,24 @@ class ByteStreamer(LiteXModule):
 
 # Simulation SoC -----------------------------------------------------------------------------------
 
-WRAPPER_SV = "bcrypt_axis8_wrap.sv"
-LITEX_MOD  = "litex_bcrypt_axis8.py"
-
 class SimSoC(SoCMini):
     def __init__(self):
         platform     = Platform()
         self.comb += platform.trace.eq(1)
         sys_clk_freq = int(50e6)
+
         SoCMini.__init__(self, platform, sys_clk_freq)
+
         self.crg = CRG(platform.request("sys_clk"))
 
-        # Import wrapper class from local file.
-        import importlib.util, sys as _sys
-        spec = importlib.util.spec_from_file_location("litex_bcrypt_axis8", LITEX_MOD)
-        mod  = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _sys.modules["litex_bcrypt_axis8"] = mod
-        BcryptCoreAXIS8 = mod.BcryptCoreAXIS8
-
-        self.platform.add_source(WRAPPER_SV)
-
-        # Instantiate (SIMULATION=1 handled in RTL param)
-        self.bcrypt = bcrypt = BcryptCoreAXIS8(self.platform,
+        from gateware.bcrypt_wrapper import BcryptWrapper
+        self.bcrypt = bcrypt = BcryptWrapper(self.platform,
             num_proxies     = 2,
             proxies_n_cores = [4, 4],
             proxies_dummy   = [0, 0],
             proxies_bitmap  = [0, 0],
         )
+        self.platform.add_source("gateware/bcrypt_axis_8b.sv")
         self.bcrypt.add_sources()
 
         # Packets ---------------------------------------------------------------------------------

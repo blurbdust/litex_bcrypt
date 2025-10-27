@@ -10,7 +10,7 @@
 //`define SIM_TRACE 1
 `define SIM_TRACE2 1
 
-module bcrypt_axis8_wrap #(
+module bcrypt_axis_8b #(
   parameter int NUM_CORES      = 12,
   parameter int VERSION        = `PKT_COMM_VERSION,
   parameter int PKT_MAX_LEN    = 16*65536,

@@ -9,7 +9,9 @@ from litex.soc.interconnect import stream
 
 from gateware.bcrypt_proxy import BcryptProxy
 
-class BcryptCoreAXIS8(LiteXModule, AutoCSR):
+# Bcrypt Wrapper -----------------------------------------------------------------------------------
+
+class BcryptWrapper(LiteXModule):
     def __init__(self, platform, num_proxies=1, proxies_n_cores=None,
                  proxies_dummy=None, proxies_bitmap=None, clk_domain="sys"):
         """
@@ -43,9 +45,6 @@ class BcryptCoreAXIS8(LiteXModule, AutoCSR):
         self._idle            = CSRStatus(fields=[CSRField("idle",  size=1)])
         self._error           = CSRStatus(fields=[CSRField("error", size=1)])
 
-        # Wrapper RTL
-        platform.add_source("bcrypt_axis8_wrap.sv")
-
         # Proxy-level bus between wrapper and proxies
         core_din         = Signal(8)
         core_ctrl        = Signal(2)
@@ -57,7 +56,7 @@ class BcryptCoreAXIS8(LiteXModule, AutoCSR):
         core_dout        = Signal(num_proxies)
 
         # Wrapper
-        self.specials += Instance("bcrypt_axis8_wrap",
+        self.specials += Instance("bcrypt_axis_8b",
             p_NUM_CORES = num_proxies,    # here "cores" == proxies for the arbiter
 
             i_CORE_CLK  = ClockSignal(clk_domain),
@@ -125,7 +124,7 @@ class BcryptCoreAXIS8(LiteXModule, AutoCSR):
         from litex.gen import LiteXContext
         cur_dir = os.path.dirname(__file__)
         for name in ["util", "pkt_comm", "bcrypt"]:
-            rtl_dir = os.path.join(cur_dir, f"gateware/{name}")
+            rtl_dir = os.path.join(cur_dir, name)
             if os.path.isdir(rtl_dir):
                 LiteXContext.platform.add_verilog_include_path(rtl_dir)
                 LiteXContext.platform.add_source_dir(rtl_dir)
