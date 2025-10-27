@@ -198,7 +198,7 @@ class SimSoC(SoCMini):
         self.rx     = rx     = WordCollector(nwords=8)
 
         # CSRs: mode_cmp=1
-        self.comb += bcrypt._ctrl.storage.eq(0b001)
+        #self.comb += bcrypt._ctrl.storage.eq(0b001)
 
         # AXIS connections
         self.comb += [

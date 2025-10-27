@@ -20,7 +20,7 @@ class BcryptCoreAXIS8(LiteXModule, AutoCSR):
             CSRField("mode_cmp", size=1, reset=0),
             CSRField("output_mode_limit", size=1, reset=0),
             CSRField("reg_output_limit",  size=1, reset=0)
-        ])
+        ], reset=0)
         self._app_status      = CSRStatus(8, name="app_status")
         self._pkt_comm_status = CSRStatus(8, name="pkt_comm_status")
         self._idle            = CSRStatus(fields=[CSRField("idle", size=1)])
@@ -79,7 +79,8 @@ class BcryptCoreAXIS8(LiteXModule, AutoCSR):
     def add_sources(self):
         from litex.gen import LiteXContext
         cur_dir = os.path.dirname(__file__)
-        rtl_dir = os.path.join(cur_dir, "gateware/bcrypt")
-        LiteXContext.platform.add_verilog_include_path(rtl_dir)
-        LiteXContext.platform.add_source_dir(rtl_dir)
+        for name in ["util", "pkt_comm", "bcrypt"]:
+            rtl_dir = os.path.join(cur_dir, f"gateware/{name}")
+            LiteXContext.platform.add_verilog_include_path(rtl_dir)
+            LiteXContext.platform.add_source_dir(rtl_dir)
 

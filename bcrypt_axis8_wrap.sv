@@ -11,6 +11,8 @@
 // Dépendances: mêmes modules que l'original (inpkt_header, template_list_b, word_gen_b,
 // bcrypt_expand_key_b, bcrypt_data, bcrypt_arbiter, comparator, outpkt_bcrypt, delay).
 //
+`timescale 1ns/1ps
+/* verilator lint_off TIMESCALEMOD */
 `include "main.vh"
 `include "bcrypt.vh"
 

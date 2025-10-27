@@ -99,7 +99,7 @@ module bcrypt_data(
 	(* RAM_STYLE="BLOCK" *)
 	reg [31:0] S [1023:0]; // Constant S
 	initial
-		$readmemh("bcrypt/S_data.txt", S, 0, 1023);
+		$readmemh("S_data.txt", S, 0, 1023);
 
 	reg [9:0] S_count = 0;
 	reg [31:0] S_out;
