@@ -24,9 +24,13 @@ from litex.build.openfpgaloader import OpenFPGALoader
 
 from litex_boards.platforms import sqrl_acorn
 
+from litex.soc.integration.soc      import SoCRegion
 from litex.soc.interconnect.csr     import *
 from litex.soc.integration.soc_core import *
 from litex.soc.integration.builder  import *
+
+from litex.soc.interconnect     import stream, wishbone
+from litex.soc.interconnect.csr import CSRStorage, CSRStatus
 
 from litex.soc.cores.clock import *
 from litex.soc.cores.led   import LedChaser
@@ -34,6 +38,123 @@ from litex.soc.cores.led   import LedChaser
 from litepcie.software      import generate_litepcie_software
 from litepcie.software      import generate_litepcie_software_headers
 from litepcie.phy.s7pciephy import S7PCIEPHY
+
+from gateware.bcrypt_wrapper import BcryptWrapper
+
+# AXI Streamer (8-bit) -----------------------------------------------------------------------------
+
+class AXI8Streamer(LiteXModule):
+    def __init__(self, sram_mem):
+        self.source = source = stream.Endpoint([("data", 8)])
+
+        self.length = CSRStorage(32)
+        self.kick   = CSRStorage(1)
+        self.done   = CSRStatus(1)
+
+        # # #
+
+        # Signals.
+        addr     = Signal(32)
+        byte_sel = Signal(2)
+
+        # Kick edge detect.
+        kick_d = Signal()
+        self.sync += kick_d.eq(self.kick.storage)
+        start = self.kick.storage & ~kick_d
+
+        # SRAM Read Port.
+        port = sram_mem.get_port(async_read=True)
+        self.specials += port
+
+        # Data-Generation.
+        self.comb += [
+            port.adr.eq(addr[2:]),
+            byte_sel.eq(addr[0:2]),
+            source.last.eq(addr == (self.length.storage - 1)),
+            Case(byte_sel, {
+                0b00: source.data.eq(port.dat_r[ 0: 8]),
+                0b01: source.data.eq(port.dat_r[ 8:16]),
+                0b10: source.data.eq(port.dat_r[16:24]),
+                0b11: source.data.eq(port.dat_r[24:32]),
+            })
+        ]
+
+        # FSM.
+        self.fsm = fsm = FSM(reset_state="IDLE")
+        fsm.act("IDLE",
+            source.valid.eq(0),
+            self.done.status.eq(1),
+            If(start & (self.length.storage > 0),
+                NextValue(addr, 0),
+                NextState("RUN")
+            )
+        )
+        fsm.act("RUN",
+            source.valid.eq(1),
+            self.done.status.eq(0),
+            If(source.ready,
+                NextValue(addr, addr + 1),
+                If(source.last,
+                    NextState("IDLE")
+                )
+            )
+        )
+
+# AXI Recorder (8-bit) -----------------------------------------------------------------------------
+
+class AXI8Recorder(LiteXModule):
+    def __init__(self, sram_mem):
+        self.sink = stream.Endpoint([("data", 8)])
+
+        self.kick  = CSRStorage(1)
+        self.done  = CSRStatus (1)
+        self.count = CSRStatus (32)
+
+        # # #
+
+        # Signals.
+        byte_addr = Signal(32)
+        byte_cnt  = Signal(32)
+
+        # Kick edge detect.
+        kick_d = Signal()
+        self.sync += kick_d.eq(self.kick.storage)
+        start = self.kick.storage & ~kick_d
+
+        # SRAM Write Port.
+        port = sram_mem.get_port(write_capable=True, we_granularity=8)
+        self.specials += port
+        self.comb += port.adr.eq(byte_addr[2:])
+
+        # FSM.
+        self.fsm = fsm = FSM(reset_state="IDLE")
+        fsm.act("IDLE",
+            self.sink.ready.eq(0),
+            self.done.status.eq(1),
+            If(start,
+                NextValue(byte_addr, 0),
+                NextValue(byte_cnt,  0),
+                NextState("RUN")
+            )
+        )
+        fsm.act("RUN",
+            self.sink.ready.eq(1),
+            self.done.status.eq(0),
+            If(self.sink.valid,
+                Case(byte_addr[0:2], {
+                    0b00 : [port.dat_w[ 0: 8].eq(self.sink.data), port.we.eq(0b0001)],
+                    0b01 : [port.dat_w[ 8:16].eq(self.sink.data), port.we.eq(0b0010)],
+                    0b10 : [port.dat_w[16:24].eq(self.sink.data), port.we.eq(0b0100)],
+                    0b11 : [port.dat_w[24:32].eq(self.sink.data), port.we.eq(0b1000)],
+                }),
+                NextValue(byte_addr, byte_addr + 1),
+                NextValue(byte_cnt,  byte_cnt  + 1),
+                If(self.sink.last,
+                    NextState("IDLE")
+                )
+            )
+        )
+        self.comb += self.count.status.eq(byte_cnt)
 
 # CRG ----------------------------------------------------------------------------------------------
 
@@ -59,8 +180,10 @@ class CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCMini):
-    def __init__(self, sys_clk_freq=125e6, with_led_chaser=True, **kwargs):
+    def __init__(self, sys_clk_freq=125e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, **kwargs):
+
         # Platform ---------------------------------------------------------------------------------
+
         platform = sqrl_acorn.Platform(variant="cle-215+")
         platform.add_extension(sqrl_acorn._litex_acorn_baseboard_mini_io, prepend=True)
 
@@ -103,42 +226,52 @@ class BaseSoC(SoCMini):
                 pads         = platform.request_all("user_led"),
                 sys_clk_freq = sys_clk_freq)
 
-        # Bcrypt -----------------------------------------------------------------------------------
+        # Streamer SRAM ----------------------------------------------------------------------------
 
-        from gateware.bcrypt_proxy import BcryptProxy
-        self.bcrypt_proxy = BcryptProxy(n_cores=1)
-        self.bcrypt_proxy.add_sources()
+        streamer_sram_size = 64*1024
+        self.streamer_sram = wishbone.SRAM(streamer_sram_size)
+        self.bus.add_region("streamer_mem", SoCRegion(origin=0x4010_0000, size=streamer_sram_size))
+        self.bus.add_slave("streamer_mem", self.streamer_sram.bus)
 
-        class BcryptProxyControl(LiteXModule):
-            # FIXME: Fake dummy control, just to avoid logic pruning.
-            def __init__(self, bcrypt_proxy):
-                self._din   = CSRStorage(8)
-                self._ctrl  = CSRStorage()
-                self._wr_en = CSRStorage()
+        # Streamer ---------------------------------------------------------------------------------
 
-                self._init_ready  = CSRStatus()
-                self._crypt_ready = CSRStatus()
+        self.streamer = AXI8Streamer(self.streamer_sram.mem)
 
-                self._rd_en = CSRStorage()
-                self._empty = CSRStatus()
-                self._dout  = CSRStatus()
+        # Bcrypt Wrapper ---------------------------------------------------------------------------
 
-                # # #
+        self.bcrypt = BcryptWrapper(
+            platform,
+            num_proxies     = num_proxies,
+            cores_per_proxy = cores_per_proxy,
+        )
+        self.platform.add_source("gateware/bcrypt_axis_8b.sv")
+        self.bcrypt.add_sources()
 
-                self.comb += [
-                    bcrypt_proxy.din.eq(self._din.storage),
-                    bcrypt_proxy.ctrl.eq(self._ctrl.storage),
-                    bcrypt_proxy.wr_en.eq(self._wr_en.storage),
+        # Recorder SRAM ----------------------------------------------------------------------------
 
-                    self._init_ready.status.eq(bcrypt_proxy.init_ready),
-                    self._crypt_ready.status.eq(bcrypt_proxy.crypt_ready),
+        recorder_sram_size = 64*1024
+        self.recorder_sram = wishbone.SRAM(recorder_sram_size)
+        self.bus.add_region("recorder_mem", SoCRegion(origin=0x4020_0000, size=recorder_sram_size))
+        self.bus.add_slave("recorder_mem", self.recorder_sram.bus)
 
-                    bcrypt_proxy.rd_en.eq(self._rd_en.storage),
-                    self._empty.status.eq(bcrypt_proxy.empty),
-                    self._dout.status.eq(bcrypt_proxy.dout),
-                ]
+        # Recorder ---------------------------------------------------------------------------------
 
-        self.bcrypt_proxy_control = BcryptProxyControl(bcrypt_proxy=self.bcrypt_proxy)
+        self.recorder = AXI8Recorder(self.recorder_sram.mem)
+
+        # Streamer → Bcrypt → Recorder Datapaths ---------------------------------------------------
+
+        self.comb += [
+            # Streamer → Bcrypt
+            self.bcrypt.sink.valid.eq(self.streamer.source.valid),
+            self.bcrypt.sink.data .eq(self.streamer.source.data),
+            self.bcrypt.sink.last .eq(self.streamer.source.last),
+            self.streamer.source.ready.eq(self.bcrypt.sink.ready),
+            # Bcrypt → Recorder
+            self.recorder.sink.valid.eq(self.bcrypt.source.valid),
+            self.recorder.sink.data .eq(self.bcrypt.source.data),
+            self.recorder.sink.last .eq(self.bcrypt.source.last),
+            self.bcrypt.source.ready.eq(self.recorder.sink.ready),
+        ]
 
 # Build --------------------------------------------------------------------------------------------
 
@@ -150,12 +283,18 @@ def main():
     parser.add_argument("--build", action="store_true", help="Build bitstream.")
     parser.add_argument("--load",  action="store_true", help="Load bitstream.")
     parser.add_argument("--flash", action="store_true", help="Flash bitstream.")
-
+    # Bcrypt Configuration.
+    # ---------------------
+    parser.add_argument("--num-proxies",     type=int, default=1, help="Number of Bcrypt proxies.")
+    parser.add_argument("--cores-per-proxy", type=int, default=1, help="Number of cores per proxy.")
     args = parser.parse_args()
 
     # Build SoC.
     # ----------
-    soc = BaseSoC()
+    soc = BaseSoC(
+        num_proxies     = args.num_proxies,
+        cores_per_proxy = args.cores_per_proxy,
+    )
     builder = Builder(soc, csr_csv="csr.csv")
     builder.build(run=args.build)
 

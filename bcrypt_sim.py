@@ -187,19 +187,23 @@ class SimSoC(SoCMini):
         sys_clk_freq = int(1e6)
 
         # Platform ---------------------------------------------------------------------------------
+
         platform = Platform()
         self.comb += platform.trace.eq(1)
 
         # SoC --------------------------------------------------------------------------------------
+
         SoCMini.__init__(self, platform, sys_clk_freq,
             cpu_type  = None,
             uart_name = "sim",
         )
 
         # CRG --------------------------------------------------------------------------------------
+
         self.crg = CRG(platform.request("sys_clk"))
 
         # Ethernet / Etherbone ---------------------------------------------------------------------
+
         self.ethphy = LiteEthPHYModel(self.platform.request("eth"))
         self.add_etherbone(phy=self.ethphy,
             ip_address  = "192.168.1.50",
@@ -207,15 +211,18 @@ class SimSoC(SoCMini):
         )
 
         # Streamer SRAM ----------------------------------------------------------------------------
+
         streamer_sram_size = 64*1024
         self.streamer_sram = wishbone.SRAM(streamer_sram_size)
         self.bus.add_region("streamer_mem", SoCRegion(origin=0x4010_0000, size=streamer_sram_size))
         self.bus.add_slave("streamer_mem",  self.streamer_sram.bus)
 
         # Streamer ---------------------------------------------------------------------------------
+
         self.streamer = AXI8Streamer(self.streamer_sram.mem)
 
         # Bcrypt Wrapper ---------------------------------------------------------------------------
+
         self.bcrypt = BcryptWrapper(self.platform,
             num_proxies     = 2,
             cores_per_proxy = 2,
@@ -224,15 +231,18 @@ class SimSoC(SoCMini):
         self.bcrypt.add_sources()
 
         # Recorder SRAM ----------------------------------------------------------------------------
+
         recorder_sram_size = 64*1024
         self.recorder_sram = wishbone.SRAM(recorder_sram_size)
         self.bus.add_region("recorder_mem", SoCRegion(origin=0x4020_0000, size=recorder_sram_size))
         self.bus.add_slave("recorder_mem",  self.recorder_sram.bus)
 
         # Recorder ---------------------------------------------------------------------------------
+
         self.recorder = AXI8Recorder(self.recorder_sram.mem)
 
         # Streamer → Bcrypt → Recorder Datapaths ---------------------------------------------------
+
         self.comb += [
             # Streamer → Bcrypt
             self.bcrypt.sink.valid.eq(self.streamer.source.valid),
