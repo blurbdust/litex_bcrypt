@@ -69,18 +69,22 @@ class AXI8Streamer(LiteXModule):
 
         self.length = CSRStorage(32)
         self.kick   = CSRStorage(1)
-        self.busy   = CSRStatus(1)
         self.done   = CSRStatus(1)
 
         # # #
 
-        # Async Read Port.
-        port = sram_mem.get_port(async_read=True)
-        self.specials += port
-
         # Signals.
         addr     = Signal(32)
         byte_sel = Signal(2)
+
+        # Kick edge detect.
+        kick_d = Signal()
+        self.sync += kick_d.eq(self.kick.storage)
+        start = self.kick.storage & ~kick_d
+
+        # Async Read Port.
+        port = sram_mem.get_port(async_read=True)
+        self.specials += port
 
         # Data-Generation.
         self.comb += [
@@ -95,17 +99,11 @@ class AXI8Streamer(LiteXModule):
             })
         ]
 
-        # Kick edge detect.
-        kick_d = Signal()
-        self.sync += kick_d.eq(self.kick.storage)
-        start = self.kick.storage & ~kick_d
-
         # FSM.
         self.fsm = fsm = FSM(reset_state="IDLE")
-        self.comb += self.done.status.eq(~self.busy.status)
         fsm.act("IDLE",
             source.valid.eq(0),
-            self.busy.status.eq(0),
+            self.done.status.eq(1),
             If(start & (self.length.storage > 0),
                 NextValue(addr, 0),
                 NextState("RUN")
@@ -113,7 +111,7 @@ class AXI8Streamer(LiteXModule):
         )
         fsm.act("RUN",
             source.valid.eq(1),
-            self.busy.status.eq(1),
+            self.done.status.eq(0),
             If(source.ready,
                 NextValue(addr, addr + 1),
                 If(source.last,

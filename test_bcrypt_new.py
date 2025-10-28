@@ -84,11 +84,10 @@ def kick_streamer(bus, pkt_bytes, timeout=10_000_000):
     bus.regs.streamer_kick.write(1)
 
     cnt = 0
-    while bus.regs.streamer_busy.read():
+    while not bus.regs.streamer_done.read():
         cnt += 1
         if cnt >= timeout:
             raise RuntimeError("streamer timeout")
-    _ = bus.regs.streamer_done.read()
     print("  → streamer done")
 
 def start_recorder(bus):
