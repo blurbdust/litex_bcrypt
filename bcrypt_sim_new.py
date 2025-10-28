@@ -32,9 +32,10 @@ from litex.soc.interconnect.csr import CSRStorage, CSRStatus
 
 from liteeth.phy.model import LiteEthPHYModel
 
-# -------------------------------------------------------------------------
-# Platform
-# -------------------------------------------------------------------------
+from gateware.bcrypt_wrapper import BcryptWrapper
+
+# IOs ----------------------------------------------------------------------------------------------
+
 _io = [
     # Clk / Rst.
     ("sys_clk", 0, Pins(1)),
@@ -176,55 +177,62 @@ class AXI8Recorder(LiteXModule):
         )
         self.comb += self.count.status.eq(byte_cnt)
 
-# -------------------------------------------------------------------------
-# Simulation SoC
-# -------------------------------------------------------------------------
+# Simulation SoC -----------------------------------------------------------------------------------
+
 class SimSoC(SoCMini):
     def __init__(self, with_eth=True):
-        platform = Platform()
         sys_clk_freq = int(50e6)
-        super().__init__(platform, sys_clk_freq,
-                         cpu_type=None, uart_name="sim")
+
+        # Platform ---------------------------------------------------------------------------------
+        platform = Platform()
         self.comb += platform.trace.eq(1)
+
+        # SoC --------------------------------------------------------------------------------------
+        SoCMini.__init__(self, platform, sys_clk_freq,
+            cpu_type  = None,
+            uart_name = "sim",
+        )
+
+        # CRG --------------------------------------------------------------------------------------
         self.crg = CRG(platform.request("sys_clk"))
 
-        # ------------------- Etherbone -------------------
+        # Ethernet / Etherbone ---------------------------------------------------------------------
         if with_eth:
             self.ethphy = LiteEthPHYModel(self.platform.request("eth"))
             self.add_etherbone(phy=self.ethphy,
-                               ip_address="192.168.1.50",
-                               mac_address=0x10e2d5000001,
-                               buffer_depth=255)
+                ip_address  = "192.168.1.50",
+                mac_address = 0x10e2d5000001,
+            )
 
-        # ------------------- Input SRAM (host writes packet) -------------------
+        # Streamer SRAM ----------------------------------------------------------------------------
         sram_size = 64*1024
         self.stream_sram = wishbone.SRAM(sram_size)
         self.bus.add_region("stream_mem", SoCRegion(origin=0x4010_0000, size=sram_size))
         self.bus.add_slave("stream_mem",  self.stream_sram.bus)
 
-        # ------------------- Bcrypt Wrapper -------------------
-        from gateware.bcrypt_wrapper import BcryptWrapper
+        # Streamer ---------------------------------------------------------------------------------
+        self.streamer = AXI8Streamer(self.stream_sram.mem)
+
+        # Bcrypt Wrapper ---------------------------------------------------------------------------
         self.bcrypt = BcryptWrapper(self.platform,
-                                    num_proxies=2,
-                                    proxies_n_cores=[4, 4],
-                                    proxies_dummy=[0, 0],
-                                    proxies_bitmap=[0, 0])
+            num_proxies     = 2,
+            proxies_n_cores = [4, 4],
+            proxies_dummy   = [0, 0],
+            proxies_bitmap  = [0, 0],
+        )
         self.platform.add_source("gateware/bcrypt_axis_8b.sv")
         self.bcrypt.add_sources()
 
-        # ------------------- Streamer -------------------
-        self.streamer = AXI8Streamer(self.stream_sram.mem)
-
-        # ------------------- Capture SRAM -------------------
+        # Recorder SRAM ----------------------------------------------------------------------------
         cap_size = 64*1024
         self.cap_sram = wishbone.SRAM(cap_size)
         self.bus.add_region("cap_mem", SoCRegion(origin=0x4020_0000, size=cap_size))
         self.bus.add_slave("cap_mem",  self.cap_sram.bus)
 
-        # ------------------- Recorder -------------------
+        # Recorder ---------------------------------------------------------------------------------
         self.recorder = AXI8Recorder(self.cap_sram.mem)
 
-        # ------------------- AXI-Stream wiring -------------------
+        # Streamer → Bcrypt → Recorder Datapaths ---------------------------------------------------
         self.comb += [
             # Streamer → Bcrypt
             self.bcrypt.sink.valid.eq(self.streamer.source.valid),
@@ -239,14 +247,13 @@ class SimSoC(SoCMini):
             self.bcrypt.source.ready.eq(self.recorder.sink.ready),
         ]
 
-        # ------------------- Debug prints (simulation only) -------------------
+        # Debug ------------------------------------------------------------------------------------
         self.sync += [
             If(self.bcrypt.sink.valid & self.bcrypt.sink.ready,
-               Display("AXIS.In  0x%02x last=%d", self.bcrypt.sink.data, self.bcrypt.sink.last)),
+               Display("AXIS.In  0x%02x last=%d", self.bcrypt.sink.data,   self.bcrypt.sink.last)),
             If(self.bcrypt.source.valid & self.bcrypt.source.ready,
                Display("AXIS.Out 0x%02x last=%d", self.bcrypt.source.data, self.bcrypt.source.last)),
         ]
-
 
 # -------------------------------------------------------------------------
 # Build / CLI
