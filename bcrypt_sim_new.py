@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
 # bcrypt_sim.py — Bcrypt Sim
-# Bcrypt core wrapped in LiteX + Etherbone control.
+# Demonstrates LiteX Bcrypt Proof-of-Concept (PoC) for flexible hardware acceleration.
 #
 # High-level:
 # - Two 64 KiB Wishbone SRAMs (host-accessible via Etherbone):
-#     • streamer_mem  @ 0x40100000 : input packet (written by host)
-#     • recorder_mem  @ 0x40200000 : output capture (read by host)
+#   • streamer_mem  @ 0x40100000 : input packet buffer (written by host)
+#   • recorder_mem  @ 0x40200000 : output capture buffer (read by host)
 # - AXI8Streamer streams packet from streamer_mem (kick + length).
-# - AXI8Recorder captures output into recorder_mem using byte-write enables.
+# - AXI8Recorder captures Bcrypt output into recorder_mem using byte-write enables.
 # - Etherbone exposes CSRs and both memories.
 #
 
