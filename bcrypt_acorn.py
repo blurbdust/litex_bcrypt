@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
 
+#
+# This file is part of LiteX-Bcrypt.
+#
+# bcrypt_acorn.py — Bcrypt on SQRL Acorn (CLE-215+)
+# Demonstrates LiteX Bcrypt Proof-of-Concept (PoC) for flexible hardware acceleration.
+#
+# High-level:
+# - Two 64 KiB Wishbone SRAMs (host-accessible via PCIe):
+#   • streamer_mem  @ 0x40100000 : input packet buffer (written by host)
+#   • recorder_mem  @ 0x40200000 : output capture buffer (read by host)
+# - AXI8Streamer streams packet from streamer_mem (kick + length).
+# - AXI8Recorder captures Bcrypt output into recorder_mem using byte-write enables.
+# - PCIe exposes CSRs and both memories.
+#
+
 from migen import *
 
 from litex.gen import *

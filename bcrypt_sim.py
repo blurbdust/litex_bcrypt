@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+#
+# This file is part of LiteX-Bcrypt.
+#
 # bcrypt_sim.py — Bcrypt Sim
 # Demonstrates LiteX Bcrypt Proof-of-Concept (PoC) for flexible hardware acceleration.
 #

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+#
+# This file is part of LiteX-Bcrypt.
+#
 # test_bcrypt.py — Test Bcrypt Sim
 # Demonstrates LiteX Bcrypt Proof-of-Concept (PoC) for flexible hardware acceleration.
 #
@@ -7,8 +10,6 @@
 # - Constructs and checksums application-level packets.
 # - Streams packets via AXI8Streamer from streamer_mem @ 0x40100000.
 # - Captures Bcrypt output into recorder_mem @ 0x40200000 using AXI8Recorder.
-# - Enables running cryptographic algorithms in hardware with full software control
-#   over PCIe, Ethernet, or any LiteX interconnect.
 #
 
 from litex import RemoteClient
