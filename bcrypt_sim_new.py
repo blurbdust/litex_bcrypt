@@ -127,7 +127,7 @@ class AXI8Recorder(LiteXModule):
     def __init__(self, sram_mem):
         self.sink = stream.Endpoint([("data", 8)])
 
-        self.kick  = CSRStorage(1, reset=0)
+        self.kick  = CSRStorage(1)
         self.done  = CSRStatus (1)
         self.count = CSRStatus (32)
 
@@ -180,8 +180,8 @@ class AXI8Recorder(LiteXModule):
 # Simulation SoC -----------------------------------------------------------------------------------
 
 class SimSoC(SoCMini):
-    def __init__(self, with_eth=True):
-        sys_clk_freq = int(50e6)
+    def __init__(self):
+        sys_clk_freq = int(1e6)
 
         # Platform ---------------------------------------------------------------------------------
         platform = Platform()
@@ -197,12 +197,11 @@ class SimSoC(SoCMini):
         self.crg = CRG(platform.request("sys_clk"))
 
         # Ethernet / Etherbone ---------------------------------------------------------------------
-        if with_eth:
-            self.ethphy = LiteEthPHYModel(self.platform.request("eth"))
-            self.add_etherbone(phy=self.ethphy,
-                ip_address  = "192.168.1.50",
-                mac_address = 0x10e2d5000001,
-            )
+        self.ethphy = LiteEthPHYModel(self.platform.request("eth"))
+        self.add_etherbone(phy=self.ethphy,
+            ip_address  = "192.168.1.50",
+            mac_address = 0x10e2d5000001,
+        )
 
         # Streamer SRAM ----------------------------------------------------------------------------
         streamer_sram_size = 64*1024
@@ -255,26 +254,20 @@ class SimSoC(SoCMini):
                Display("AXIS.Out 0x%02x last=%d", self.bcrypt.source.data, self.bcrypt.source.last)),
         ]
 
-# -------------------------------------------------------------------------
-# Build / CLI
-# -------------------------------------------------------------------------
-def sim_args(parser):
-    verilator_build_args(parser)
-    parser.add_argument("--no-eth", action="store_true", help="Disable Etherbone.")
+# Build / Main -------------------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Bcrypt Sim — simplified streamer/recorder")
-    sim_args(parser)
+    parser = argparse.ArgumentParser(description="LiteX Bcrypt Sim.")
+    verilator_build_args(parser)
     args = parser.parse_args()
     verilator_kwargs = verilator_build_argdict(args)
 
     sim_config = SimConfig()
     sim_config.add_clocker("sys_clk", freq_hz=int(25e6))
-    if not args.no_eth:
-        sim_config.add_module("ethernet", "eth", args={"interface": "tap0", "ip": "192.168.1.100"})
+    sim_config.add_module("ethernet", "eth", args={"interface": "tap0", "ip": "192.168.1.100"})
 
-    soc = SimSoC(with_eth=not args.no_eth)
-    builder = Builder(soc, csr_csv="csr.csv", compile_software=False)
+    soc     = SimSoC()
+    builder = Builder(soc, csr_csv="csr.csv")
     builder.build(sim_config=sim_config, **verilator_kwargs)
 
 if __name__ == "__main__":
