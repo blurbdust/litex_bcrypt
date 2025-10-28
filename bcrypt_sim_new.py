@@ -7,8 +7,8 @@
 # - Two 64 KiB Wishbone SRAMs (host-accessible via Etherbone):
 #     • streamer_mem  @ 0x40100000 : input packet (written by host)
 #     • recorder_mem  @ 0x40200000 : output capture (read by host)
-# - SimpleAXI8Streamer streams packet from streamer_mem (kick + length).
-# - SimpleAXI8Recorder captures output into recorder_mem using byte-write enables.
+# - AXI8Streamer streams packet from streamer_mem (kick + length).
+# - AXI8Recorder captures output into recorder_mem using byte-write enables.
 # - Etherbone exposes CSRs and both memories.
 #
 
@@ -205,13 +205,13 @@ class SimSoC(SoCMini):
             )
 
         # Streamer SRAM ----------------------------------------------------------------------------
-        sram_size = 64*1024
-        self.stream_sram = wishbone.SRAM(sram_size)
-        self.bus.add_region("stream_mem", SoCRegion(origin=0x4010_0000, size=sram_size))
-        self.bus.add_slave("stream_mem",  self.stream_sram.bus)
+        streamer_sram_size = 64*1024
+        self.streamer_sram = wishbone.SRAM(streamer_sram_size)
+        self.bus.add_region("streamer_mem", SoCRegion(origin=0x4010_0000, size=streamer_sram_size))
+        self.bus.add_slave("streamer_mem",  self.streamer_sram.bus)
 
         # Streamer ---------------------------------------------------------------------------------
-        self.streamer = AXI8Streamer(self.stream_sram.mem)
+        self.streamer = AXI8Streamer(self.streamer_sram.mem)
 
         # Bcrypt Wrapper ---------------------------------------------------------------------------
         self.bcrypt = BcryptWrapper(self.platform,
@@ -224,13 +224,13 @@ class SimSoC(SoCMini):
         self.bcrypt.add_sources()
 
         # Recorder SRAM ----------------------------------------------------------------------------
-        cap_size = 64*1024
-        self.cap_sram = wishbone.SRAM(cap_size)
-        self.bus.add_region("cap_mem", SoCRegion(origin=0x4020_0000, size=cap_size))
-        self.bus.add_slave("cap_mem",  self.cap_sram.bus)
+        recorder_sram_size = 64*1024
+        self.recorder_sram = wishbone.SRAM(recorder_sram_size)
+        self.bus.add_region("recorder_mem", SoCRegion(origin=0x4020_0000, size=recorder_sram_size))
+        self.bus.add_slave("recorder_mem",  self.recorder_sram.bus)
 
         # Recorder ---------------------------------------------------------------------------------
-        self.recorder = AXI8Recorder(self.cap_sram.mem)
+        self.recorder = AXI8Recorder(self.recorder_sram.mem)
 
         # Streamer → Bcrypt → Recorder Datapaths ---------------------------------------------------
         self.comb += [
