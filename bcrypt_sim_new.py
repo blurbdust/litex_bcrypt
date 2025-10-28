@@ -112,32 +112,40 @@ class SimpleAXI8Streamer(LiteXModule):
                 )
             )
         )
-
 # -------------------------------------------------------------------------
-# Simple AXI-8 Recorder (packs 4 bytes → 1 word, stops on .last)
+# Simple AXI-8 Recorder – byte-write enable, fully synchronous status
 # -------------------------------------------------------------------------
 class SimpleAXI8Recorder(LiteXModule):
+    """
+    Captures an AXI-Stream(8) byte stream into a Wishbone SRAM.
+    * One byte is written per valid cycle using the SRAM's byte-enable.
+    * No packing, no flush, no Case() – the address and data are always
+      driven; only the write-enable is gated.
+    * count.status and done.status are updated with NextValue().
+    """
     def __init__(self, cap_mem, cap_size_bytes):
         self.sink = stream.Endpoint([("data", 8)])
 
+        # ---- CSRs -------------------------------------------------------
         self.kick  = CSRStorage(1, reset=0)
-        self.busy  = CSRStatus(1)
-        self.done  = CSRStatus(1)
-        self.count = CSRStatus(32)
+        self.busy  = CSRStatus (1)
+        self.done  = CSRStatus (1)
+        self.count = CSRStatus (32)
 
-        wp = cap_mem.get_port(write_capable=True)
+        # ---- SRAM write port (byte granularity) -------------------------
+        wp = cap_mem.get_port(write_capable=True, we_granularity=8)
         self.specials += wp
 
-        addr   = Signal(32)   # byte address (word address = addr>>2)
-        cnt    = Signal(32)   # bytes captured this run
-        shift  = Signal(32)   # packing register
-        idx    = Signal(2)    # 0-3
+        # ---- Internal state ---------------------------------------------
+        byte_addr = Signal(32)   # current byte offset in the SRAM
+        byte_cnt  = Signal(32)   # number of bytes captured this run
 
-        # Edge detect
+        # ---- Kick edge detection ----------------------------------------
         kick_d = Signal()
         self.sync += kick_d.eq(self.kick.storage)
         start = self.kick.storage & ~kick_d
 
+        # ---- FSM --------------------------------------------------------
         fsm = FSM(reset_state="IDLE")
         self.submodules.fsm = fsm
 
@@ -145,46 +153,40 @@ class SimpleAXI8Recorder(LiteXModule):
             self.sink.ready.eq(0),
             self.busy.status.eq(0),
             If(start,
-                NextValue(addr, 0),
-                NextValue(cnt, 0),
-                NextValue(shift, 0),
-                NextValue(idx, 0),
+                NextValue(self.done.status, 0),
+                NextValue(byte_addr, 0),
+                NextValue(byte_cnt,  0),
                 NextState("RUN")
             )
         )
+        self.comb += self.count.status.eq(byte_cnt)
+        self.comb += wp.adr.eq(byte_addr[2:])
+
         fsm.act("RUN",
             self.sink.ready.eq(1),
             self.busy.status.eq(1),
+
             If(self.sink.valid,
-                # pack byte
-                NextValue(shift, Cat(self.sink.data, shift)),
-                NextValue(idx, idx + 1),
-                NextValue(cnt, cnt + 1),
+                # ---- Write the incoming byte into the correct lane ----------
+                Case(byte_addr[0:2], {
+                    0b00 : [wp.dat_w[ 0: 8].eq(self.sink.data),  wp.we.eq(0b0001)],
+                    0b01 : [wp.dat_w[ 8:16].eq(self.sink.data),  wp.we.eq(0b0010)],
+                    0b10 : [wp.dat_w[16:24].eq(self.sink.data),  wp.we.eq(0b0100)],
+                    0b11 : [wp.dat_w[24:32].eq(self.sink.data),  wp.we.eq(0b1000)],
+                }),
+                # ---- Advance counters ----------------------------------------
+                NextValue(byte_addr, byte_addr + 1),
+                NextValue(byte_cnt,  byte_cnt  + 1),
 
-                # write full word
-                If(idx == 3,
-                    wp.adr.eq(addr[2:]),
-                    wp.dat_w.eq(Cat(self.sink.data, shift)),
-                    wp.we.eq(1),
-                    NextValue(addr, addr + 4)
-                ),
-
-                # stop condition
+                # ---- End of packet -----------------------------------------
                 If(self.sink.last,
-                    # flush partial word if any
-                    If(idx != 0,
-                        wp.adr.eq(addr[2:]),
-                        wp.dat_w.eq(Cat(self.sink.data, shift)),
-                        wp.we.eq(1),
-                        NextValue(addr, addr + 4)
-                    ),
-                    self.count.status.eq(cnt + 1),
-                    self.done.status.eq(1),
+
+
+                    NextValue(self.done.status,  1),
                     NextState("IDLE")
                 )
             )
         )
-
 
 # -------------------------------------------------------------------------
 # Simulation SoC

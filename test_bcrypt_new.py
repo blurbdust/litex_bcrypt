@@ -90,6 +90,7 @@ def kick_streamer(bus, pkt_bytes, timeout=10_000_000):
             raise RuntimeError("streamer timeout")
     _ = bus.regs.streamer_done.read()
     print("  → streamer done")
+
 def start_recorder(bus):
     """Start capture once (captures all packets until last .last)"""
     print("Starting recorder (captures until last packet)...")
