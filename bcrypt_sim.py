@@ -218,9 +218,7 @@ class SimSoC(SoCMini):
         # Bcrypt Wrapper ---------------------------------------------------------------------------
         self.bcrypt = BcryptWrapper(self.platform,
             num_proxies     = 2,
-            proxies_n_cores = [4, 4],
-            proxies_dummy   = [0, 0],
-            proxies_bitmap  = [0, 0],
+            cores_per_proxy = 2,
         )
         self.platform.add_source("gateware/bcrypt_axis_8b.sv")
         self.bcrypt.add_sources()

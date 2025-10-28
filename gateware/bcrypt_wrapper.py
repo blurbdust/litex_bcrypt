@@ -27,27 +27,13 @@ class BcryptWrapper(LiteXModule):
 
     Parameters
     ----------
-    platform         : LiteX platform (used to register Verilog sources).
-    num_proxies      : Number of proxies exposed to the arbiter (default: 1).
-    proxies_n_cores  : List of real cores per proxy (default: [1] * num_proxies).
-    proxies_dummy    : List of 0/1 flags (1 = dummy proxy), optional.
-    proxies_bitmap   : List of masks for CORES_NOT_DUMMY, optional.
-    clk_domain       : Clock domain name (default: "sys").
+    platform        : LiteX platform (used to register Verilog sources).
+    num_proxies     : Number of proxies exposed to the arbiter (default: 1).
+    cores_per_proxy : Number of real cores per proxy (default: 1).
     """
     def __init__(self, platform,
         num_proxies     = 1,
-        proxies_n_cores = None,
-        proxies_dummy   = None,
-        proxies_bitmap  = None):
-
-        # Defaults / checks ------------------------------------------------------------------------
-        if proxies_n_cores is None: proxies_n_cores = [1]*num_proxies
-        if proxies_dummy   is None: proxies_dummy   = [0]*num_proxies
-        if proxies_bitmap  is None: proxies_bitmap  = [0]*num_proxies
-        assert len(proxies_n_cores) == num_proxies
-        assert len(proxies_dummy)   == num_proxies
-        assert len(proxies_bitmap)  == num_proxies
-
+        cores_per_proxy = 1):
         # AXI-Stream 8-bit -------------------------------------------------------------------------
         self.sink   = stream.Endpoint([("data", 8)])  # IN  (data/valid/ready/last)
         self.source = stream.Endpoint([("data", 8)])  # OUT (data/valid/ready/last)
@@ -119,11 +105,7 @@ class BcryptWrapper(LiteXModule):
         # Proxies ----------------------------------------------------------------------------------
 
         for i in range(num_proxies):
-            p = BcryptProxy(
-                n_cores        = proxies_n_cores[i],
-                dummy          = proxies_dummy[i],
-                cores_not_dummy= proxies_bitmap[i],
-            )
+            p = BcryptProxy(n_cores=cores_per_proxy)
             self.add_module(name=f"proxy{i}", module=p)
             self.comb += [
                 # Mode.
