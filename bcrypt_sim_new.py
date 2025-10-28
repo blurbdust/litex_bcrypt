@@ -64,7 +64,7 @@ class Platform(SimPlatform):
 # AXI Streamer (8-bit) -----------------------------------------------------------------------------
 
 class AXI8Streamer(LiteXModule):
-    def __init__(self, sram_mem, sram_size_bytes):
+    def __init__(self, sram_mem):
         self.source = source = stream.Endpoint([("data", 8)])
 
         self.length = CSRStorage(32)
@@ -82,7 +82,7 @@ class AXI8Streamer(LiteXModule):
         self.sync += kick_d.eq(self.kick.storage)
         start = self.kick.storage & ~kick_d
 
-        # Async Read Port.
+        # SRAM Read Port.
         port = sram_mem.get_port(async_read=True)
         self.specials += port
 
@@ -123,70 +123,58 @@ class AXI8Streamer(LiteXModule):
 # AXI Recorder (8-bit) -----------------------------------------------------------------------------
 
 class AXI8Recorder(LiteXModule):
-    def __init__(self, cap_mem, cap_size_bytes):
+    def __init__(self, sram_mem):
         self.sink = stream.Endpoint([("data", 8)])
 
-        # ---- CSRs -------------------------------------------------------
         self.kick  = CSRStorage(1, reset=0)
-        self.busy  = CSRStatus (1)
         self.done  = CSRStatus (1)
         self.count = CSRStatus (32)
 
-        # ---- SRAM write port (byte granularity) -------------------------
-        wp = cap_mem.get_port(write_capable=True, we_granularity=8)
-        self.specials += wp
+        # # #
 
-        # ---- Internal state ---------------------------------------------
-        byte_addr = Signal(32)   # current byte offset in the SRAM
-        byte_cnt  = Signal(32)   # number of bytes captured this run
+        # Signals.
+        byte_addr = Signal(32)
+        byte_cnt  = Signal(32)
 
-        # ---- Kick edge detection ----------------------------------------
+        # Kick edge detect.
         kick_d = Signal()
         self.sync += kick_d.eq(self.kick.storage)
         start = self.kick.storage & ~kick_d
 
-        # ---- FSM --------------------------------------------------------
-        fsm = FSM(reset_state="IDLE")
-        self.submodules.fsm = fsm
+        # SRAM Write Port.
+        port = sram_mem.get_port(write_capable=True, we_granularity=8)
+        self.specials += port
+        self.comb += port.adr.eq(byte_addr[2:])
 
+        # FSM.
+        self.fsm = fsm = FSM(reset_state="IDLE")
         fsm.act("IDLE",
             self.sink.ready.eq(0),
-            self.busy.status.eq(0),
+            self.done.status.eq(1),
             If(start,
-                NextValue(self.done.status, 0),
                 NextValue(byte_addr, 0),
                 NextValue(byte_cnt,  0),
                 NextState("RUN")
             )
         )
-        self.comb += self.count.status.eq(byte_cnt)
-        self.comb += wp.adr.eq(byte_addr[2:])
-
         fsm.act("RUN",
             self.sink.ready.eq(1),
-            self.busy.status.eq(1),
-
+            self.done.status.eq(0),
             If(self.sink.valid,
-                # ---- Write the incoming byte into the correct lane ----------
                 Case(byte_addr[0:2], {
-                    0b00 : [wp.dat_w[ 0: 8].eq(self.sink.data),  wp.we.eq(0b0001)],
-                    0b01 : [wp.dat_w[ 8:16].eq(self.sink.data),  wp.we.eq(0b0010)],
-                    0b10 : [wp.dat_w[16:24].eq(self.sink.data),  wp.we.eq(0b0100)],
-                    0b11 : [wp.dat_w[24:32].eq(self.sink.data),  wp.we.eq(0b1000)],
+                    0b00 : [port.dat_w[ 0: 8].eq(self.sink.data), port.we.eq(0b0001)],
+                    0b01 : [port.dat_w[ 8:16].eq(self.sink.data), port.we.eq(0b0010)],
+                    0b10 : [port.dat_w[16:24].eq(self.sink.data), port.we.eq(0b0100)],
+                    0b11 : [port.dat_w[24:32].eq(self.sink.data), port.we.eq(0b1000)],
                 }),
-                # ---- Advance counters ----------------------------------------
                 NextValue(byte_addr, byte_addr + 1),
                 NextValue(byte_cnt,  byte_cnt  + 1),
-
-                # ---- End of packet -----------------------------------------
                 If(self.sink.last,
-
-
-                    NextValue(self.done.status,  1),
                     NextState("IDLE")
                 )
             )
         )
+        self.comb += self.count.status.eq(byte_cnt)
 
 # -------------------------------------------------------------------------
 # Simulation SoC
@@ -225,7 +213,7 @@ class SimSoC(SoCMini):
         self.bcrypt.add_sources()
 
         # ------------------- Streamer -------------------
-        self.streamer = AXI8Streamer(self.stream_sram.mem, sram_size)
+        self.streamer = AXI8Streamer(self.stream_sram.mem)
 
         # ------------------- Capture SRAM -------------------
         cap_size = 64*1024
@@ -234,7 +222,7 @@ class SimSoC(SoCMini):
         self.bus.add_slave("cap_mem",  self.cap_sram.bus)
 
         # ------------------- Recorder -------------------
-        self.recorder = AXI8Recorder(self.cap_sram.mem, cap_size)
+        self.recorder = AXI8Recorder(self.cap_sram.mem)
 
         # ------------------- AXI-Stream wiring -------------------
         self.comb += [

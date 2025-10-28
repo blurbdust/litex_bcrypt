@@ -98,11 +98,10 @@ def start_recorder(bus):
 
 def wait_recorder(bus, timeout=10_000_000):
     cnt = 0
-    while bus.regs.recorder_busy.read():
+    while not bus.regs.recorder_done.read():
         cnt += 1
         if cnt >= timeout:
             raise RuntimeError("recorder timeout")
-    _ = bus.regs.recorder_done.read()
     cap_len = bus.regs.recorder_count.read()
     print(f"Recorder captured {cap_len} bytes.")
     return cap_len
