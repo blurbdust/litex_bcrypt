@@ -246,18 +246,11 @@ class SimSoC(SoCMini):
             self.bcrypt.source.ready.eq(self.recorder.sink.ready),
         ]
 
-        # Debug ------------------------------------------------------------------------------------
-        self.sync += [
-            If(self.bcrypt.sink.valid & self.bcrypt.sink.ready,
-               Display("AXIS.In  0x%02x last=%d", self.bcrypt.sink.data,   self.bcrypt.sink.last)),
-            If(self.bcrypt.source.valid & self.bcrypt.source.ready,
-               Display("AXIS.Out 0x%02x last=%d", self.bcrypt.source.data, self.bcrypt.source.last)),
-        ]
-
 # Build / Main -------------------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="LiteX Bcrypt Sim.")
+    parser.add_argument("--debug", action="store_true", help="Enable AXI byte traces (Display statements)")
     verilator_build_args(parser)
     args = parser.parse_args()
     verilator_kwargs = verilator_build_argdict(args)
@@ -267,6 +260,13 @@ def main():
     sim_config.add_module("ethernet", "eth", args={"interface": "tap0", "ip": "192.168.1.100"})
 
     soc     = SimSoC()
+    if args.debug:
+        soc.sync += [
+            If(soc.bcrypt.sink.valid & soc.bcrypt.sink.ready,
+               Display("AXIS.In  0x%02x last=%d", soc.bcrypt.sink.data, soc.bcrypt.sink.last)),
+            If(soc.bcrypt.source.valid & soc.bcrypt.source.ready,
+               Display("AXIS.Out 0x%02x last=%d", soc.bcrypt.source.data, soc.bcrypt.source.last)),
+        ]
     builder = Builder(soc, csr_csv="csr.csv")
     builder.build(sim_config=sim_config, **verilator_kwargs)
 
