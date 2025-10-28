@@ -211,10 +211,10 @@ class BaseSoC(SoCMini):
             bar0_size  = 0x20000,
         )
         self.pcie_phy.update_config({
-            "Base_Class_Menu"          : "Network_controller",  # FIXME: Update.
-            "Sub_Class_Interface_Menu" : "Ethernet_controller", # FIXME: Update.
-            "Class_Code_Base"          : "02",                  # FIXME: Update.
-            "Class_Code_Sub"           : "00",                  # FIXME: Update.
+            "Base_Class_Menu"          : "Encryption/Decryption_controllers",
+            "Sub_Class_Interface_Menu" : "Other_en/decryption",
+            "Class_Code_Base"          : "0B",
+            "Class_Code_Sub"           : "80",
         })
         self.add_pcie(phy=self.pcie_phy, ndmas=1, address_width=64)
         platform.add_period_constraint(self.crg.cd_sys.clk, 1e9/sys_clk_freq)
