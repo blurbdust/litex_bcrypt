@@ -1,32 +1,46 @@
 #!/usr/bin/env python3
-# bcrypt_sim.py — Bcrypt Sim (simplified streamer / recorder)
+
+# bcrypt_sim.py — Bcrypt Sim
+# Bcrypt core wrapped in LiteX + Etherbone control.
 #
-#   • Wishbone SRAM (64 KiB) holds the *input* packet.
-#   • SimpleAXI8Streamer streams the packet (kick → busy → done).
-#   • SimpleAXI8Recorder captures the Bcrypt output (kick → busy → done, packs 4:1).
-#   • Etherbone gives host access to SRAM and CSRs.
+# High-level:
+# - Two 64 KiB Wishbone SRAMs (host-accessible via Etherbone):
+#     • streamer_mem  @ 0x40100000 : input packet (written by host)
+#     • recorder_mem  @ 0x40200000 : output capture (read by host)
+# - SimpleAXI8Streamer streams packet from streamer_mem (kick + length).
+# - SimpleAXI8Recorder captures output into recorder_mem using byte-write enables.
+# - Etherbone exposes CSRs and both memories.
 #
+
 import argparse
+
 from migen import *
+
 from litex.gen import *
+
 from litex.build.generic_platform import *
 from litex.build.sim              import SimPlatform
 from litex.build.sim.config       import SimConfig
-from litex.build.sim.verilator import verilator_build_args, verilator_build_argdict
-from litex.soc.integration.soc import SoCRegion
-from litex.soc.integration.soc_core import SoCMini
-from litex.soc.integration.builder import Builder
-from litex.soc.interconnect import stream, wishbone
-from litex.soc.interconnect.csr import CSRStorage, CSRStatus
-from liteeth.phy.model import LiteEthPHYModel
+from litex.build.sim.verilator    import verilator_build_args, verilator_build_argdict
 
+from litex.soc.integration.soc      import SoCRegion
+from litex.soc.integration.soc_core import SoCMini
+from litex.soc.integration.builder  import Builder
+
+from litex.soc.interconnect     import stream, wishbone
+from litex.soc.interconnect.csr import CSRStorage, CSRStatus
+
+from liteeth.phy.model import LiteEthPHYModel
 
 # -------------------------------------------------------------------------
 # Platform
 # -------------------------------------------------------------------------
 _io = [
+    # Clk / Rst.
     ("sys_clk", 0, Pins(1)),
     ("sys_rst", 0, Pins(1)),
+
+    # Ethernet (for Etherbone).
     ("eth_clocks", 0,
         Subsignal("tx", Pins(1)),
         Subsignal("rx", Pins(1)),
@@ -41,59 +55,56 @@ _io = [
     ),
 ]
 
+# Platform -----------------------------------------------------------------------------------------
+
 class Platform(SimPlatform):
     def __init__(self):
         super().__init__("SIM", _io)
 
+# AXI Streamer (8-bit) -----------------------------------------------------------------------------
 
-# -------------------------------------------------------------------------
-# Simple AXI-8 Streamer (single-packet, kick-only)
-# -------------------------------------------------------------------------
-class SimpleAXI8Streamer(LiteXModule):
+class AXI8Streamer(LiteXModule):
     def __init__(self, sram_mem, sram_size_bytes):
-        self.source = stream.Endpoint([("data", 8)])
+        self.source = source = stream.Endpoint([("data", 8)])
 
-        # CSRs
-        self.length = CSRStorage(32, reset=0)   # packet length in bytes
-        self.kick   = CSRStorage(1, reset=0)
+        self.length = CSRStorage(32)
+        self.kick   = CSRStorage(1)
         self.busy   = CSRStatus(1)
         self.done   = CSRStatus(1)
 
-        # Async read port
-        rp = sram_mem.get_port(async_read=True)
-        self.specials += rp
+        # # #
 
-        addr     = Signal(32)  # byte address
-        byte_sel = Signal(2)   # 0-3
-        is_last  = Signal()
+        # Async Read Port.
+        port = sram_mem.get_port(async_read=True)
+        self.specials += port
 
+        # Signals.
+        addr     = Signal(32)
+        byte_sel = Signal(2)
+
+        # Data-Generation.
         self.comb += [
-            rp.adr.eq(addr[2:]),
+            port.adr.eq(addr[2:]),
             byte_sel.eq(addr[0:2]),
-            self.source.data.eq(rp.dat_r >> (8 * byte_sel)),
+            source.last.eq(addr == (self.length.storage - 1)),
             Case(byte_sel, {
-                0b00: self.source.data.eq(rp.dat_r[ 0: 8]),
-                0b01: self.source.data.eq(rp.dat_r[ 8:16]),
-                0b10: self.source.data.eq(rp.dat_r[16:24]),
-                0b11: self.source.data.eq(rp.dat_r[24:32]),
-            }),
-            is_last.eq(addr == (self.length.storage - 1)),
-            self.source.last.eq(is_last & self.source.valid),
+                0b00: source.data.eq(port.dat_r[ 0: 8]),
+                0b01: source.data.eq(port.dat_r[ 8:16]),
+                0b10: source.data.eq(port.dat_r[16:24]),
+                0b11: source.data.eq(port.dat_r[24:32]),
+            })
         ]
 
-        self.sync += If(self.source.valid, Display("0x%08x", rp.dat_r))
-
-        # Kick edge detect
+        # Kick edge detect.
         kick_d = Signal()
         self.sync += kick_d.eq(self.kick.storage)
         start = self.kick.storage & ~kick_d
 
-        # FSM
-        fsm = FSM(reset_state="IDLE")
-        self.submodules.fsm = fsm
-
+        # FSM.
+        self.fsm = fsm = FSM(reset_state="IDLE")
+        self.comb += self.done.status.eq(~self.busy.status)
         fsm.act("IDLE",
-            self.source.valid.eq(0),
+            source.valid.eq(0),
             self.busy.status.eq(0),
             If(start & (self.length.storage > 0),
                 NextValue(addr, 0),
@@ -101,28 +112,19 @@ class SimpleAXI8Streamer(LiteXModule):
             )
         )
         fsm.act("RUN",
-            self.source.valid.eq(1),
+            source.valid.eq(1),
             self.busy.status.eq(1),
-            If(self.source.ready,
-                If(is_last,
-                    self.done.status.eq(1),
+            If(source.ready,
+                NextValue(addr, addr + 1),
+                If(source.last,
                     NextState("IDLE")
-                ).Else(
-                    NextValue(addr, addr + 1)
                 )
             )
         )
-# -------------------------------------------------------------------------
-# Simple AXI-8 Recorder – byte-write enable, fully synchronous status
-# -------------------------------------------------------------------------
-class SimpleAXI8Recorder(LiteXModule):
-    """
-    Captures an AXI-Stream(8) byte stream into a Wishbone SRAM.
-    * One byte is written per valid cycle using the SRAM's byte-enable.
-    * No packing, no flush, no Case() – the address and data are always
-      driven; only the write-enable is gated.
-    * count.status and done.status are updated with NextValue().
-    """
+
+# AXI Recorder (8-bit) -----------------------------------------------------------------------------
+
+class AXI8Recorder(LiteXModule):
     def __init__(self, cap_mem, cap_size_bytes):
         self.sink = stream.Endpoint([("data", 8)])
 
@@ -225,7 +227,7 @@ class SimSoC(SoCMini):
         self.bcrypt.add_sources()
 
         # ------------------- Streamer -------------------
-        self.streamer = SimpleAXI8Streamer(self.stream_sram.mem, sram_size)
+        self.streamer = AXI8Streamer(self.stream_sram.mem, sram_size)
 
         # ------------------- Capture SRAM -------------------
         cap_size = 64*1024
@@ -234,7 +236,7 @@ class SimSoC(SoCMini):
         self.bus.add_slave("cap_mem",  self.cap_sram.bus)
 
         # ------------------- Recorder -------------------
-        self.recorder = SimpleAXI8Recorder(self.cap_sram.mem, cap_size)
+        self.recorder = AXI8Recorder(self.cap_sram.mem, cap_size)
 
         # ------------------- AXI-Stream wiring -------------------
         self.comb += [
