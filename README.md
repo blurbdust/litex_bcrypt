@@ -19,11 +19,12 @@ The project originated from a request to port existing Bcrypt cores from ZTEX bo
 -------------------------------
 
 These are required to build and use the FPGA design and associated software:
-- Linux computer (Tested on Ubuntu 20.04).
-- Python3, Xilinx Vivado (for hardware target).
-- Acorn CLE-215+ board (for hardware target).
-- USB cable for JTAG.
-- OpenFPGALoader for loading/flashing.
+- Linux (Ubuntu 20.04 tested)
+- Python 3
+- Xilinx Vivado (for synthesis)
+- Acorn CLE-215+ board
+- USB cable (JTAG)
+- OpenFPGALoader
 
 [> Installing LiteX
 -------------------
@@ -66,23 +67,72 @@ For more detailed instructions and additional information, please see the OpenFP
 [> Build and Flash the FPGA design
 ----------------------------------
 ![](doc/acorn.jpg)
-Build the hardware target with:
+
 ```sh
-./bcrypt_acorn.py --build --load
+# Build and flash (M.2 slot, x4 lanes)
+./bcrypt_acorn.py --variant=m2 --build --flash
+
+# Or: baseboard (x1 lane)
+./bcrypt_acorn.py --variant=baseboard --build --flash
 ```
-Or flash it with:
+
+> **Note**: Use `--variant=m2` (default) or `--variant=baseboard`.
+
+[> Test the Hardware over PCIe
+-------------------------------
+### 1. Build & Load LitePCIe Driver
 ```sh
-./bcrypt_acorn.py --build --flash
+cd software/kernel
+make clean all
+sudo insmod litepcie.ko
 ```
-[> Test the hardware over LitePCIe driver
-------------------------------------------
-Install the LitePCIe driver and use the test script:
+
+### 2. Rescan PCIe Bus
 ```sh
-generate_litepcie_software(soc, "software/driver")
-cd software/driver
-make
-sudo ./litepcie_test
+cd ../../software
+./rescan.py
+```
+
+### 3. Verify Device
+```sh
+lspci -d 10ee: -v
+```
+**Expected output**:
+```
+04:00.0 Processor [0b80]: Xilinx Corporation Device 7021
+    Subsystem: Xilinx Corporation Device 0007
+    Flags: bus master, fast devsel, latency 0, IRQ 105, IOMMU group 22
+    Memory at fc800000 (32-bit, non-prefetchable) [size=1M]
+    Capabilities: <access denied>
+    Kernel driver in use: litepcie
+
+```
+
+### 4. Start LiteX Server (PCIe)
+```sh
+litex_server --pcie --pcie-bar=04:00.0
+```
+> Replace `04:00.0` with your BAR from `lspci`.
+
+### 5. Run Test (in another terminal)
+```sh
 ./test_bcrypt.py
+```
+
+**Success looks like**:
+```
+Starting recorder (captures until last packet)...
+Writing 46 bytes into streamer_mem @ 0x00040000...
+  → streamer done
+Writing 23 bytes into streamer_mem @ 0x00040000...
+  → streamer done
+Writing 24 bytes into streamer_mem @ 0x00040000...
+  → streamer done
+Recorder captured 22 bytes.
+First 64 captured bytes:
+02 d2 b9 35 04 00 00 00 03 00 f6 2d 46 ca 01 00 00 00 fe ff ff ff
+app_status=0x00 pkt_comm_status=0x00
+Test complete.
 ```
 
 [> Build and Run simulation
