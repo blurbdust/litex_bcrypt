@@ -90,9 +90,10 @@ class BaseSoC(SoCMini):
 
         # PCIe -------------------------------------------------------------------------------------
 
+        # PHY.
+        # ----
         pcie_lanes      = {"m2" :   4, "baseboard" :  1}[variant]
         pcie_data_width = {"m2" : 128, "baseboard" : 64}[variant]
-
         self.pcie_phy = S7PCIEPHY(platform, platform.request(f"pcie_x{pcie_lanes}"),
             data_width = pcie_data_width,
             bar0_size  = 0x20000,
@@ -107,8 +108,24 @@ class BaseSoC(SoCMini):
             "Class_Code_Base"          : "0B",
             "Class_Code_Sub"           : "80",
         })
+
+
+        # Core.
+        # -----
         self.add_pcie(phy=self.pcie_phy, ndmas=1, address_width=64)
         platform.add_period_constraint(self.crg.cd_sys.clk, 1e9/sys_clk_freq)
+
+        # Timings False Paths.
+        # --------------------
+        false_paths = [
+            ("{{*s7pciephy_clkout0}}", "{{sys_clk}}"),
+            ("{{*s7pciephy_clkout1}}", "{{sys_clk}}"),
+            ("{{*s7pciephy_clkout3}}", "{{sys_clk}}"),
+            ("{{*s7pciephy_clkout0}}", "{{*s7pciephy_clkout1}}")
+        ]
+        for clk0, clk1 in false_paths:
+            platform.toolchain.pre_placement_commands.append(f"set_false_path -from [get_clocks {clk0}] -to [get_clocks {clk1}]")
+            platform.toolchain.pre_placement_commands.append(f"set_false_path -from [get_clocks {clk1}] -to [get_clocks {clk0}]")
 
         # Leds -------------------------------------------------------------------------------------
 
