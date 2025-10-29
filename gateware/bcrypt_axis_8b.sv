@@ -370,7 +370,7 @@ module bcrypt_axis_8b #(
   );
 
   // OUTPKT → Split 16→8 ---------------------------------------------------------------------------
-  wire outpkt_full = 1'b0;
+  wire outpkt_full;
 
   assign arbiter_rd_en = ~arbiter_empty & ~outpkt_full;
 
