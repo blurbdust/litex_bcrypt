@@ -60,6 +60,10 @@ def build_word_list_payload(words):
 def build_word_gen_payload():
     return [0x00, 0x01, 0x00, 0x00, 0x00, 0xBB]
 
+# Debug: Print packet
+def print_packet(name, data):
+    print(f"{name} ({len(data)} bytes): {' '.join(f'{b:02x}' for b in data)}")
+
 # Wishbone helpers ---------------------------------------------------------------------------------
 
 def write_bytes(bus, base, data_bytes):
@@ -128,14 +132,17 @@ def main():
     cmp_pl  = build_cmp_config_payload_bcrypt(iter_count, salt16, b"b", hashes)
     cmp_hdr = build_header(PKT_TYPE_CMP_CONFIG, cmp_id, len(cmp_pl))
     pkt_cmp = add_checksums_around_payload(cmp_hdr, cmp_pl)
+    print_packet("CMP_CONFIG", pkt_cmp)
 
     wl_pl  = build_word_list_payload(["pass"])
     wl_hdr = build_header(PKT_TYPE_WORD_LIST, wl_id, len(wl_pl))
     pkt_wl = add_checksums_around_payload(wl_hdr, wl_pl)
+    print_packet("WORD_LIST", pkt_wl)
 
     wg_pl  = build_word_gen_payload()
     wg_hdr = build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl))
     pkt_wg = add_checksums_around_payload(wg_hdr, wg_pl)
+    print_packet("WORD_GEN", pkt_wg)
 
     # Start recorder.
     start_recorder(bus)

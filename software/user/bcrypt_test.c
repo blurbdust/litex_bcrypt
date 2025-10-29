@@ -119,6 +119,13 @@ static void build_word_gen_payload(uint8_t *out, size_t *len) {
     *len = sizeof(payload);
 }
 
+static void print_packet(const char *name, const uint8_t *pkt, size_t len) {
+    printf("%s (%zu bytes): ", name, len);
+    for (size_t i = 0; i < len; i++)
+        printf("%02x ", pkt[i]);
+    printf("\n");
+}
+
 /* Wishbone Helpers */
 /*------------------*/
 static void write_bytes(int fd, uint32_t base, const uint8_t *data, size_t len) {
@@ -155,6 +162,7 @@ static void bcrypt_test(int fd) {
     le24(cmp_pl_len, hdr + 4);
     le16(0x0001, hdr + 10);
     add_checksums(pkt_cmp, &pkt_cmp_len, hdr, 12, cmp_pl, cmp_pl_len);
+    print_packet("CMP_CONFIG", pkt_cmp, pkt_cmp_len);
 
     const char *words[] = {"pass"};
     build_word_list_payload(wl_pl, &wl_pl_len, words, 1);
@@ -162,12 +170,14 @@ static void bcrypt_test(int fd) {
     le24(wl_pl_len, hdr + 4);
     le16(0x0002, hdr + 10);
     add_checksums(pkt_wl, &pkt_wl_len, hdr, 12, wl_pl, wl_pl_len);
+    print_packet("WORD_LIST", pkt_wl, pkt_wl_len);
 
     build_word_gen_payload(wg_pl, &wg_pl_len);
     hdr[1] = PKT_TYPE_WORD_GEN;
     le24(wg_pl_len, hdr + 4);
     le16(0x0003, hdr + 10);
     add_checksums(pkt_wg, &pkt_wg_len, hdr, 12, wg_pl, wg_pl_len);
+    print_packet("WORD_GEN", pkt_wg, pkt_wg_len);
 
     /* Start recorder */
     printf("\e[1m[> Starting recorder...\e[0m\n");
