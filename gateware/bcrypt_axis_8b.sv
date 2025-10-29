@@ -68,7 +68,7 @@ module bcrypt_axis_8b #(
   wire       inpkt_end;
 
   axis8_to_fifo #(
-    .DEPTH (2048)
+    .DEPTH (64)
   ) u_axis_in (
     .CLK           (CLK),
     .RSTN          (RSTN),
@@ -423,7 +423,7 @@ endmodule
 // Helpers -----------------------------------------------------------------------------------------
 
 module axis8_to_fifo #(
-  parameter DEPTH = 2048
+  parameter DEPTH = 64
 )(
   input  wire       CLK,
   input  wire       RSTN,
