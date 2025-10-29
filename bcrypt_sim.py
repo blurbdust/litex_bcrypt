@@ -118,7 +118,7 @@ class SimSoC(SoCMini):
         # Recorder SRAM ----------------------------------------------------------------------------
 
         recorder_sram_size = 1*1024
-        self.recorder_sram = wishbone.SRAM(recorder_sram_size)
+        self.recorder_sram = wishbone.SRAM(recorder_sram_size, read_only=True)
         self.bus.add_region("recorder_mem", SoCRegion(origin=0x4020_0000, size=recorder_sram_size))
         self.bus.add_slave("recorder_mem",  self.recorder_sram.bus)
 
