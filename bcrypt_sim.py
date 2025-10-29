@@ -68,7 +68,7 @@ class Platform(SimPlatform):
 # Simulation SoC -----------------------------------------------------------------------------------
 
 class SimSoC(SoCMini):
-    def __init__(self):
+    def __init__(self, num_proxies=1, cores_per_proxy=1):
         sys_clk_freq = int(1e6)
 
         # Platform ---------------------------------------------------------------------------------
@@ -109,8 +109,8 @@ class SimSoC(SoCMini):
         # Bcrypt Wrapper ---------------------------------------------------------------------------
 
         self.bcrypt = BcryptWrapper(self.platform,
-            num_proxies     = 2,
-            cores_per_proxy = 2,
+            num_proxies     = num_proxies,
+            cores_per_proxy = cores_per_proxy,
         )
         self.platform.add_source("gateware/bcrypt_axis_8b.sv")
         self.bcrypt.add_sources()
@@ -147,6 +147,12 @@ class SimSoC(SoCMini):
 def main():
     parser = argparse.ArgumentParser(description="LiteX Bcrypt Sim.")
     parser.add_argument("--debug", action="store_true", help="Enable AXI byte traces (Display statements)")
+
+    # Bcrypt Configuration.
+    # ---------------------
+    parser.add_argument("--num-proxies", type=int, default=1, help="Number of Bcrypt proxies.")
+    parser.add_argument("--cores-per-proxy", type=int, default=1, help="Number of cores per proxy.")
+
     verilator_build_args(parser)
     args = parser.parse_args()
     verilator_kwargs = verilator_build_argdict(args)
@@ -155,7 +161,10 @@ def main():
     sim_config.add_clocker("sys_clk", freq_hz=int(25e6))
     sim_config.add_module("ethernet", "eth", args={"interface": "tap0", "ip": "192.168.1.100"})
 
-    soc     = SimSoC()
+    soc = SimSoC(
+        num_proxies     = args.num_proxies,
+        cores_per_proxy = args.cores_per_proxy,
+    )
     if args.debug:
         soc.sync += [
             If(soc.bcrypt.sink.valid & soc.bcrypt.sink.ready,
