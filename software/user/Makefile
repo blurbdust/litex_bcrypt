@@ -3,12 +3,12 @@ LDFLAGS=-g
 CC=$(CROSS_COMPILE)gcc
 AR=ar
 
-PROGS=litepcie_util litepcie_test
+PROGS=litepcie_util litepcie_test bcrypt_test
 
 all: $(PROGS)
 
 liblitepcie/liblitepcie.a: liblitepcie/litepcie_dma.o liblitepcie/litepcie_flash.o liblitepcie/litepcie_helpers.o
-	ar rcs $@ $+
+	ar rcs $@ $^
 	ranlib $@
 
 litepcie_util: liblitepcie/liblitepcie.a litepcie_util.o
@@ -16,6 +16,9 @@ litepcie_util: liblitepcie/liblitepcie.a litepcie_util.o
 
 litepcie_test: liblitepcie/liblitepcie.a litepcie_test.o
 	$(CC) $(LDFLAGS) -o $@ $^ -Lliblitepcie -lm -llitepcie
+
+bcrypt_test: liblitepcie/liblitepcie.a bcrypt_test.o
+	$(CC) $(LDFLAGS) -o $@ $^ -Lliblitepcie -llitepcie
 
 clean:
 	rm -f $(PROGS) *.o *.a *.d *~ liblitepcie/*.a liblitepcie/*.o liblitepcie/*.d
