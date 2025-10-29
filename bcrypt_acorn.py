@@ -34,7 +34,6 @@ from litex.soc.interconnect import wishbone
 from litex.soc.cores.clock import *
 from litex.soc.cores.led   import LedChaser
 
-from litepcie.software      import generate_litepcie_software
 from litepcie.software      import generate_litepcie_software_headers
 from litepcie.phy.s7pciephy import S7PCIEPHY
 
@@ -168,6 +167,7 @@ def main():
     parser.add_argument("--build", action="store_true", help="Build bitstream.")
     parser.add_argument("--load",  action="store_true", help="Load bitstream.")
     parser.add_argument("--flash", action="store_true", help="Flash bitstream.")
+
     # Bcrypt Configuration.
     # ---------------------
     parser.add_argument("--num-proxies",     type=int, default=1, help="Number of Bcrypt proxies.")
@@ -185,7 +185,7 @@ def main():
 
     # Generate PCIe C Headers.
     # ------------------------
-    #generate_litepcie_software_headers(soc, "software/kernel")
+    generate_litepcie_software_headers(soc, "software/kernel")
 
     # Load FPGA.
     # ----------
