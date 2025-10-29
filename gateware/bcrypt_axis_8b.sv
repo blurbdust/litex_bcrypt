@@ -79,7 +79,7 @@ module bcrypt_axis_8b #(
     .dout          (din),
     .rd_en         (rd_en),
     .empty         (empty),
-    .pkt_end_pulse (inpkt_end)
+    .pkt_end_pulse ()
   );
 
   // OUT: 16-bit producer → AXIS8 -----------------------------------------------------------------
