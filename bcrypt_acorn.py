@@ -64,7 +64,7 @@ class CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCMini):
-    def __init__(self, sys_clk_freq=125e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, **kwargs):
+    def __init__(self, variant="m2", sys_clk_freq=125e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, **kwargs):
 
         # Platform ---------------------------------------------------------------------------------
 
@@ -78,7 +78,7 @@ class BaseSoC(SoCMini):
         # SoCMini ----------------------------------------------------------------------------------
 
         SoCMini.__init__(self, platform, sys_clk_freq,
-            ident         = "Bcrypt on SQRL Acorn",
+            ident         = f"Bcrypt on SQRL Acorn / {variant} variant / built on",
             ident_version = True,
         )
 
@@ -90,10 +90,17 @@ class BaseSoC(SoCMini):
 
         # PCIe -------------------------------------------------------------------------------------
 
-        self.pcie_phy = S7PCIEPHY(platform, platform.request("pcie_x4"),
-            data_width = 128,
+        pcie_lanes      = {"m2" :   4, "baseboard" :  1}[variant]
+        pcie_data_width = {"m2" : 128, "baseboard" : 64}[variant]
+
+        self.pcie_phy = S7PCIEPHY(platform, platform.request(f"pcie_x{pcie_lanes}"),
+            data_width = pcie_data_width,
             bar0_size  = 0x20000,
         )
+        if variant == "baseboard":
+            platform.toolchain.pre_placement_commands.append("reset_property LOC [get_cells -hierarchical -filter {{NAME=~pcie_s7/*gtp_channel.gtpe2_channel_i}}]")
+            platform.toolchain.pre_placement_commands.append("set_property LOC GTPE2_CHANNEL_X0Y7 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*gtp_channel.gtpe2_channel_i}}]")
+
         self.pcie_phy.update_config({
             "Base_Class_Menu"          : "Encryption/Decryption_controllers",
             "Sub_Class_Interface_Menu" : "Other_en/decryption",
@@ -164,9 +171,10 @@ def main():
 
     # Build/Load/Flash Arguments.
     # ---------------------------
-    parser.add_argument("--build", action="store_true", help="Build bitstream.")
-    parser.add_argument("--load",  action="store_true", help="Load bitstream.")
-    parser.add_argument("--flash", action="store_true", help="Flash bitstream.")
+    parser.add_argument("--variant", default="m2",        help="Design variant.", choices=["m2", "baseboard"])
+    parser.add_argument("--build",   action="store_true", help="Build bitstream.")
+    parser.add_argument("--load",    action="store_true", help="Load bitstream.")
+    parser.add_argument("--flash",   action="store_true", help="Flash bitstream.")
 
     # Bcrypt Configuration.
     # ---------------------
@@ -177,6 +185,10 @@ def main():
     # Build SoC.
     # ----------
     soc = BaseSoC(
+        # Generic.
+        variant         = args.variant,
+
+        # Bcrypt.
         num_proxies     = args.num_proxies,
         cores_per_proxy = args.cores_per_proxy,
     )
