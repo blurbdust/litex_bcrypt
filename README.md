@@ -135,7 +135,7 @@ app_status=0x00 pkt_comm_status=0x00
 Test complete.
 ```
 
-[> Build and Run simulation
+[> Build and Run Simulation
 ----------------------------
 A simulation of the FPGA design is provided and can also be run and configured dynamically.
 ```sh
@@ -144,10 +144,61 @@ litex_server --udp
 ./test_bcrypt.py
 ```
 
-[> Resource usage
+[> Resource Usage
 -----------------
-TODO.
+
+Run sweep:
+```sh
+./bcrypt_resources.py
+```
+
+| Cores | Proxies | LUTs   | FFs    | BRAM | DSP |
+|-------|---------|--------|--------|------|-----|
+| 1     | 1       | 8,243  | 6,773  |   47 | 1   |
+| 2     | 1       | 8,668  | 7,008  |   49 | 1   |
+| 4     | 1       | 9,505  | 7,477  |   53 | 1   |
+| 8     | 1       | 11,193 | 8,418  |   61 | 1   |
+| 16    | 2       | 14,593 | 10,319 |   77 | 1   |
+| 32    | 4       | 21,343 | 14,113 |  109 | 1   |
+| 64    | 8       | 34,840 | 21,700 |  173 | 1   |
+| 128   | 8       | 61,678 | 36,684 |  301 | 1   |
+| **150** | **10** | **70,973** | **41,884** | **345** | **1** |
+
+> **150 cores tested** (10 × 15) — **94.5% BRAM**
+
+---
+
+[> Maximum Cores (Tested)
+-------------------------
+**150 Bcrypt cores** on Acorn CLE-215+ (Artix-7 XC7A200T)
+
+| Resource | Used | Available | % Used |
+|----------|------|-----------|--------|
+| **BRAM** | **345** | 365 | **94.5%** |
+| LUT      | 70,973 | 133,800 | **53.0%** |
+| FF       | 41,884 | 267,600 | **15.7%** |
+| DSP      | 1 | 740 | **0.1%** |
+
+**Build command**:
+```sh
+./bcrypt_acorn.py --num-proxies=10 --cores-per-proxy=15 --build
+```
+
+---
+
+[> Comparison with ZTEX 1.15y (Spartan-6 LX150)
+-----------------------------------------------
+| Metric              | **LiteX (Artix-7)** | **ZTEX (Spartan-6)** |
+|---------------------|---------------------|----------------------|
+| **Cores per FPGA**  | **150**             | 124                  |
+| **Cores per Board** | 150                 | **496 (4× FPGA)**    |
+| **Clock**           | 125 MHz             | 141 MHz (152 MHz OC) |
+| **Interface**       | PCIe Gen2 x4        | USB 2.0              |
+
+---
 
 [> Limitations with current PoC
--------------------------------
-TODO.
+---------------
+- BRAM is limiting factor (365 total)
+- No multi-DMA streaming
+
