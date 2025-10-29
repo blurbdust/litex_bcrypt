@@ -8,8 +8,8 @@
 #
 # High-level:
 # - Two 1 KiB Wishbone SRAMs (host-accessible via Etherbone):
-#   • streamer_mem  @ 0x40100000 : input packet buffer (written by host)
-#   • recorder_mem  @ 0x40200000 : output capture buffer (read by host)
+#   • streamer_mem  @ 0x00040000 : input packet buffer (written by host)
+#   • recorder_mem  @ 0x00080000 : output capture buffer (read by host)
 # - AXI8Streamer streams packet from streamer_mem (kick + length).
 # - AXI8Recorder captures Bcrypt output into recorder_mem using byte-write enables.
 # - Etherbone exposes CSRs and both memories.
@@ -99,7 +99,7 @@ class SimSoC(SoCMini):
 
         streamer_sram_size = 1*1024
         self.streamer_sram = wishbone.SRAM(streamer_sram_size)
-        self.bus.add_region("streamer_mem", SoCRegion(origin=0x4010_0000, size=streamer_sram_size))
+        self.bus.add_region("streamer_mem", SoCRegion(origin=0x0004_0000, size=streamer_sram_size))
         self.bus.add_slave("streamer_mem",  self.streamer_sram.bus)
 
         # Streamer ---------------------------------------------------------------------------------
@@ -119,7 +119,7 @@ class SimSoC(SoCMini):
 
         recorder_sram_size = 1*1024
         self.recorder_sram = wishbone.SRAM(recorder_sram_size, read_only=True)
-        self.bus.add_region("recorder_mem", SoCRegion(origin=0x4020_0000, size=recorder_sram_size))
+        self.bus.add_region("recorder_mem", SoCRegion(origin=0x0008_0000, size=recorder_sram_size))
         self.bus.add_slave("recorder_mem",  self.recorder_sram.bus)
 
         # Recorder ---------------------------------------------------------------------------------

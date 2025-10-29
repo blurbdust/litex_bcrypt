@@ -80,8 +80,8 @@ def read_bytes(bus, base, length):
 
 # Streamer / Recorder control ----------------------------------------------------------------------
 
-STREAMER_MEM_BASE = 0x40100000
-RECORDER_MEM_BASE = 0x40200000
+STREAMER_MEM_BASE = 0x00040000
+RECORDER_MEM_BASE = 0x00080000
 
 def kick_streamer(bus, pkt_bytes, timeout=10_000_000):
     """Write packet to streamer_mem and trigger streaming."""
