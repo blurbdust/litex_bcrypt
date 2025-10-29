@@ -201,6 +201,9 @@ def main():
 
     # Build SoC.
     # ----------
+    def get_build_name():
+        return f"bcrypt_p{args.num_proxies}_c{args.cores_per_proxy}"
+
     soc = BaseSoC(
         # Generic.
         variant         = args.variant,
@@ -209,8 +212,9 @@ def main():
         num_proxies     = args.num_proxies,
         cores_per_proxy = args.cores_per_proxy,
     )
-    builder = Builder(soc, csr_csv="csr.csv")
-    builder.build(run=args.build)
+
+    builder = Builder(soc, output_dir=os.path.join("build", get_build_name()), csr_csv="csr.csv")
+    builder.build(build_name=get_build_name(), run=args.build)
 
     # Generate PCIe C Headers.
     # ------------------------
