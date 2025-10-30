@@ -9,6 +9,8 @@
 --------
 The project provides a LiteX-based infrastructure for integrating a Bcrypt cryptographic accelerator into FPGA designs.
 
+![](doc/litex_bcrypt_poc_architecture.png)
+
 The design includes a LiteX SoC with peripherals (SRAM, CSRs, etc.) and adds AXI8Streamer, AXI8Recorder, and the BcryptWrapper for input/output streaming.
 
 A simple test script is provided to stream packets through the core and capture results. The hardware target is the Acorn CLE-215+ with PCIe, but the PoC is also simulatable.
@@ -66,7 +68,8 @@ For more detailed instructions and additional information, please see the OpenFP
 
 [> Build and Flash the FPGA design
 ----------------------------------
-![](doc/acorn.jpg)
+
+![](doc/litex_bcrypt_poc_hardware_setup.png)
 
 ```sh
 # Build and flash (M.2 slot, x4 lanes)
@@ -146,6 +149,8 @@ litex_server --udp
 
 [> Resource Usage
 -----------------
+
+![](doc/litex_bcrypt_poc_floorplan.png)
 
 Run sweep:
 ```sh
