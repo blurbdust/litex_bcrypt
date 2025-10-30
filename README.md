@@ -1,9 +1,9 @@
-           __   _ __      _  __  ___                    __ 
-          / /  (_) /____ | |/_/ / _ )__________ _____  / /_
-         / /__/ / __/ -_)>  <  / _  / __/ __/ // / _ \/ __/
-        /____/_/\__/\__/_/|_| /____/\__/_/  \_, / .__/\__/ 
-                                           /___/_/         
-                    LiteX-Bcrypt Proof of Concept
+                         __   _ __      _  __  ___                    __
+                        / /  (_) /____ | |/_/ / _ )__________ _____  / /_
+                       / /__/ / __/ -_)>  <  / _  / __/ __/ // / _ \/ __/
+                      /____/_/\__/\__/_/|_| /____/\__/_/  \_, / .__/\__/
+                                                         /___/_/
+                                  LiteX-Bcrypt Proof of Concept
 
 [> Intro
 --------
@@ -171,26 +171,6 @@ Run sweep:
 
 > **150 cores tested** (10 × 15) — **94.5% BRAM**
 
----
-
-[> Maximum Cores (Tested)
--------------------------
-**150 Bcrypt cores** on Acorn CLE-215+ (Artix-7 XC7A200T)
-
-| Resource | Used | Available | % Used |
-|----------|------|-----------|--------|
-| **BRAM** | **345** | 365 | **94.5%** |
-| LUT      | 70,973 | 133,800 | **53.0%** |
-| FF       | 41,884 | 267,600 | **15.7%** |
-| DSP      | 1 | 740 | **0.1%** |
-
-**Build command**:
-```sh
-./bcrypt_acorn.py --num-proxies=10 --cores-per-proxy=15 --build
-```
-
----
-
 [> Comparison with ZTEX 1.15y (Spartan-6 LX150)
 -----------------------------------------------
 | Metric              | **LiteX (Artix-7)** | **ZTEX (Spartan-6)** |
@@ -200,10 +180,9 @@ Run sweep:
 | **Clock**           | 125 MHz             | 141 MHz (152 MHz OC) |
 | **Interface**       | PCIe Gen2 x4        | USB 2.0              |
 
----
-
 [> Limitations with current PoC
 ---------------
-- BRAM is limiting factor (365 total)
-- No multi-DMA streaming
-
+- BRAM is limiting factor on XC7A200T (365 total).
+- No DMA, only MMAP SRAM Writing/Reading for PoC.
+- No IRQ, only polling for PoC.
+- Very basic CMP_CONFIG/WORD_LIST/WORD_GEN, to validate infrastructure/integration, needs to be tested with realistic use-case.
