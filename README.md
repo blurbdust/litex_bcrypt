@@ -186,3 +186,4 @@ Run sweep:
 - No DMA, only MMAP SRAM Writing/Reading for PoC.
 - No IRQ, only polling for PoC.
 - Very basic CMP_CONFIG/WORD_LIST/WORD_GEN, to validate infrastructure/integration, needs to be tested with realistic use-case.
+- 125MHz Sys Clk, passing timing with 150 cores, max frequency still to evaluate.
