@@ -190,21 +190,21 @@ static void bcrypt_test(int fd) {
     litepcie_writel(fd, CSR_STREAMER_LENGTH_ADDR, pkt_cmp_len);
     litepcie_writel(fd, CSR_STREAMER_KICK_ADDR, 0);
     litepcie_writel(fd, CSR_STREAMER_KICK_ADDR, 1);
-    while (!litepcie_readl(fd, CSR_STREAMER_DONE_ADDR)) usleep(100);
+    while (!litepcie_readl(fd, CSR_STREAMER_DONE_ADDR));
 
     printf("\e[1m[> Streaming WORD_LIST...\e[0m\n");
     write_bytes(fd, STREAMER_MEM_BASE, pkt_wl, pkt_wl_len);
     litepcie_writel(fd, CSR_STREAMER_LENGTH_ADDR, pkt_wl_len);
     litepcie_writel(fd, CSR_STREAMER_KICK_ADDR, 0);
     litepcie_writel(fd, CSR_STREAMER_KICK_ADDR, 1);
-    while (!litepcie_readl(fd, CSR_STREAMER_DONE_ADDR)) usleep(100);
+    while (!litepcie_readl(fd, CSR_STREAMER_DONE_ADDR));
 
     printf("\e[1m[> Streaming WORD_GEN...\e[0m\n");
     write_bytes(fd, STREAMER_MEM_BASE, pkt_wg, pkt_wg_len);
     litepcie_writel(fd, CSR_STREAMER_LENGTH_ADDR, pkt_wg_len);
     litepcie_writel(fd, CSR_STREAMER_KICK_ADDR, 0);
     litepcie_writel(fd, CSR_STREAMER_KICK_ADDR, 1);
-    while (!litepcie_readl(fd, CSR_STREAMER_DONE_ADDR)) usleep(100);
+    while (!litepcie_readl(fd, CSR_STREAMER_DONE_ADDR));
 
     /* Wait recorder */
     while (!litepcie_readl(fd, CSR_RECORDER_DONE_ADDR)) usleep(100);
