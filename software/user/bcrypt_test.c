@@ -161,7 +161,7 @@ static void bcrypt_test(int fd) {
     uint8_t hdr[12] = {PKT_VERSION, PKT_TYPE_CMP_CONFIG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     le24(cmp_pl_len, hdr + 4);
     le16(0x0001, hdr + 10);
-    add_checksums(pkt_cmp, &pkt_cmp_len, hdr, 12, cmp_pl, cmp_pl_len);
+    add_checksums(pkt_cmp, &pkt_cmp_len, hdr, 10, cmp_pl, cmp_pl_len);
     print_packet("CMP_CONFIG", pkt_cmp, pkt_cmp_len);
 
     const char *words[] = {"pass"};
@@ -169,14 +169,14 @@ static void bcrypt_test(int fd) {
     hdr[1] = PKT_TYPE_WORD_LIST;
     le24(wl_pl_len, hdr + 4);
     le16(0x0002, hdr + 10);
-    add_checksums(pkt_wl, &pkt_wl_len, hdr, 12, wl_pl, wl_pl_len);
+    add_checksums(pkt_wl, &pkt_wl_len, hdr, 10, wl_pl, wl_pl_len);
     print_packet("WORD_LIST", pkt_wl, pkt_wl_len);
 
     build_word_gen_payload(wg_pl, &wg_pl_len);
     hdr[1] = PKT_TYPE_WORD_GEN;
     le24(wg_pl_len, hdr + 4);
     le16(0x0003, hdr + 10);
-    add_checksums(pkt_wg, &pkt_wg_len, hdr, 12, wg_pl, wg_pl_len);
+    add_checksums(pkt_wg, &pkt_wg_len, hdr, 10, wg_pl, wg_pl_len);
     print_packet("WORD_GEN", pkt_wg, pkt_wg_len);
 
     /* Start recorder */
