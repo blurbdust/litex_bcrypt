@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-
 #
 # This file is part of LiteX-Bcrypt.
 #
-# test_bcrypt.py — Test Bcrypt Sim
-# Demonstrates LiteX Bcrypt Proof-of-Concept (PoC) for flexible hardware acceleration.
+# test_bcrypt.py — Bcrypt Basic Test
 #
-# High-level:
-# - Constructs and checksums application-level packets.
-# - Streams packets via AXI8Streamer from streamer_mem @ 0x40100000.
-# - Captures Bcrypt output into recorder_mem @ 0x40200000 using AXI8Recorder.
+# Initializes the Bcrypt accelerator once with CMP_CONFIG, then runs multiple
+# password hashing operations (WORD_LIST + WORD_GEN) and reports performance.
 #
+import time
 
 from litex import RemoteClient
 
@@ -60,10 +57,6 @@ def build_word_list_payload(words):
 def build_word_gen_payload():
     return [0x00, 0x01, 0x00, 0x00, 0x00, 0xBB]
 
-# Debug: Print packet
-def print_packet(name, data):
-    print(f"{name} ({len(data)} bytes): {' '.join(f'{b:02x}' for b in data)}")
-
 # Wishbone helpers ---------------------------------------------------------------------------------
 
 def write_bytes(bus, base, data_bytes):
@@ -85,11 +78,8 @@ def read_bytes(bus, base, length):
 # Streamer / Recorder control ----------------------------------------------------------------------
 
 STREAMER_MEM_BASE = 0x00040000
-RECORDER_MEM_BASE = 0x00080000
 
 def kick_streamer(bus, pkt_bytes, timeout=10_000_000):
-    """Write packet to streamer_mem and trigger streaming."""
-    print(f"Writing {len(pkt_bytes)} bytes into streamer_mem @ 0x{STREAMER_MEM_BASE:08x}...")
     write_bytes(bus, STREAMER_MEM_BASE, pkt_bytes)
     bus.regs.streamer_length.write(len(pkt_bytes))
     bus.regs.streamer_kick.write(0)
@@ -99,11 +89,8 @@ def kick_streamer(bus, pkt_bytes, timeout=10_000_000):
         cnt += 1
         if cnt >= timeout:
             raise RuntimeError("streamer timeout")
-    print("  → streamer done")
 
 def start_recorder(bus):
-    """Start capture (records until .last)."""
-    print("Starting recorder (captures until last packet)...")
     bus.regs.recorder_kick.write(0)
     bus.regs.recorder_kick.write(1)
 
@@ -113,9 +100,7 @@ def wait_recorder(bus, timeout=10_000_000):
         cnt += 1
         if cnt >= timeout:
             raise RuntimeError("recorder timeout")
-    recorder_len = bus.regs.recorder_count.read()
-    print(f"Recorder captured {recorder_len} bytes.")
-    return recorder_len
+    return bus.regs.recorder_count.read()
 
 # Main ---------------------------------------------------------------------------------------------
 
@@ -126,48 +111,67 @@ def main():
     # Build packets.
     cmp_id, wl_id, wg_id = 0x0001, 0x0002, 0x0003
     iter_count = 5
-    salt16     = bytes(range(0x10))
-    hashes     = [0]
+    salt16 = bytes(range(0x10))
+    hashes = [0]
 
-    cmp_pl  = build_cmp_config_payload_bcrypt(iter_count, salt16, b"b", hashes)
+    cmp_pl = build_cmp_config_payload_bcrypt(iter_count, salt16, b"b", hashes)
     cmp_hdr = build_header(PKT_TYPE_CMP_CONFIG, cmp_id, len(cmp_pl))
     pkt_cmp = add_checksums_around_payload(cmp_hdr, cmp_pl)
-    print_packet("CMP_CONFIG", pkt_cmp)
 
-    wl_pl  = build_word_list_payload(["pass"])
+    wl_pl = build_word_list_payload(["pass"])
     wl_hdr = build_header(PKT_TYPE_WORD_LIST, wl_id, len(wl_pl))
     pkt_wl = add_checksums_around_payload(wl_hdr, wl_pl)
-    print_packet("WORD_LIST", pkt_wl)
 
-    wg_pl  = build_word_gen_payload()
+    wg_pl = build_word_gen_payload()
     wg_hdr = build_header(PKT_TYPE_WORD_GEN, wg_id, len(wg_pl))
     pkt_wg = add_checksums_around_payload(wg_hdr, wg_pl)
-    print_packet("WORD_GEN", pkt_wg)
 
-    # Start recorder.
-    start_recorder(bus)
-
-    # Stream packets.
+    # Initialize core (no response expected).
+    print("\033[1m[> Initializing Bcrypt core...\033[0m")
     kick_streamer(bus, pkt_cmp)
-    kick_streamer(bus, pkt_wl)
-    kick_streamer(bus, pkt_wg)
 
-    # Read capture.
-    recorder_len = wait_recorder(bus)
-    recorded_data = read_bytes(bus, RECORDER_MEM_BASE, recorder_len)
-    print("First 64 captured bytes:")
-    print(" ".join(f"{b:02x}" for b in recorded_data[:64]))
+    # Run performance test.
+    runs = 10
+    total_time = 0.0
+    total_hashes = 0
 
-    # Optional: read bcrypt status.
+    print(f"\n\033[1m[> Running {runs} iterations (1 password per run)...\033[0m")
+    print(f"{'Run':>3} {'Out':>4} {'Time(s)':>8} {'H/s':>10} {'Hash'}")
+    print("-" * 55)
+
+    for run in range(runs):
+        start_time = time.time()
+
+        start_recorder(bus)
+        kick_streamer(bus, pkt_wl)
+        kick_streamer(bus, pkt_wg)
+        out_len = wait_recorder(bus)
+        result = read_bytes(bus, 0x00080000, out_len)
+
+        elapsed = time.time() - start_time
+        hps = 1.0 / elapsed if elapsed > 0 else 0
+
+        total_time += elapsed
+        total_hashes += 1
+
+        hash_hex = ''.join(f'{b:02x}' for b in result)
+        print(f"{run+1:>3} {out_len:>4} {elapsed:>8.3f} {hps:>10.0f} {hash_hex}")
+
+    # Final statistics.
+    avg_hps = total_hashes / total_time
+    print("-" * 55)
+    print(f"Total: {total_hashes} hashes in {total_time:.3f} s → {avg_hps:,.0f} H/s")
+
+    # Optional: read status.
     try:
         app = bus.regs.bcrypt_app_status.read()
         pkt = bus.regs.bcrypt_pkt_comm_status.read()
-        print(f"app_status=0x{app:02x} pkt_comm_status=0x{pkt:02x}")
+        print(f"\033[1m[> app_status=0x{app:02x} pkt_comm_status=0x{pkt:02x}\033[0m")
     except Exception:
         pass
 
     bus.close()
-    print("Test complete.")
+    print("\033[1m[> Test complete.\033[0m")
 
 if __name__ == "__main__":
     main()
