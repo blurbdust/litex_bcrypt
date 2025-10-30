@@ -40,6 +40,8 @@ from litepcie.phy.s7pciephy import S7PCIEPHY
 from gateware.axis_8b import AXIS8Streamer, AXIS8Recorder
 from gateware.bcrypt_wrapper import BcryptWrapper
 
+from litescope import LiteScopeAnalyzer
+
 # CRG ----------------------------------------------------------------------------------------------
 
 class CRG(LiteXModule):
@@ -64,7 +66,7 @@ class CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCMini):
-    def __init__(self, variant="m2", sys_clk_freq=125e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, **kwargs):
+    def __init__(self, variant="m2", sys_clk_freq=125e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
 
         # Platform ---------------------------------------------------------------------------------
 
@@ -181,6 +183,23 @@ class BaseSoC(SoCMini):
             self.bcrypt.source.ready.eq(self.recorder.sink.ready),
         ]
 
+        # Analyzer ---------------------------------------------------------------------------------
+
+        if with_analyzer:
+            analyzer_signals = [
+                # Streamer → Bcrypt.
+                self.streamer.source,
+
+                # Bcrypt → Recorder.
+                self.recorder.sink,
+            ]
+            self.analyzer = LiteScopeAnalyzer(analyzer_signals,
+                depth        = 4096,
+                clock_domain = "sys",
+                register     = True,
+                csr_csv      = "analyzer.csv"
+            )
+
 # Build --------------------------------------------------------------------------------------------
 
 def main():
@@ -197,6 +216,10 @@ def main():
     # ---------------------
     parser.add_argument("--num-proxies",     type=int, default=1, help="Number of Bcrypt proxies.")
     parser.add_argument("--cores-per-proxy", type=int, default=1, help="Number of cores per proxy.")
+
+    # Analyzer.
+    # ---------
+    parser.add_argument("--with-analyzer", action="store_true", help="Add LiteScope analyzer on AXI streams.")
     args = parser.parse_args()
 
     # Build SoC.
@@ -211,6 +234,9 @@ def main():
         # Bcrypt.
         num_proxies     = args.num_proxies,
         cores_per_proxy = args.cores_per_proxy,
+
+        # Analyzer.
+        with_analyzer   = args.with_analyzer,
     )
 
     builder = Builder(soc, output_dir=os.path.join("build", get_build_name()), csr_csv="csr.csv")
