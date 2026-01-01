@@ -66,7 +66,7 @@ class CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCMini):
-    def __init__(self, variant="m2", sys_clk_freq=125e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
+    def __init__(self, variant="m2", sys_clk_freq=141e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
 
         # Platform ---------------------------------------------------------------------------------
 
