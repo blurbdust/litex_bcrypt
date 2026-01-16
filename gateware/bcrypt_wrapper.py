@@ -59,6 +59,7 @@ class BcryptWrapper(LiteXModule):
         core_crypt_ready = Signal(num_proxies)
         core_empty       = Signal(num_proxies)
         core_dout        = Signal(num_proxies)
+        core_rst         = Signal()  # Reset signal from bcrypt core
 
         # Verilog AXIS8 wrapper --------------------------------------------------------------------
         self.specials += Instance("bcrypt_axis_8b",
@@ -100,6 +101,8 @@ class BcryptWrapper(LiteXModule):
             o_core_rd_en        = core_rd_en,
             i_core_empty        = core_empty,
             i_core_dout         = core_dout,
+            # Reset signal for proxies/cores.
+            o_core_rst          = core_rst,
         )
 
         # Proxies ----------------------------------------------------------------------------------
@@ -108,8 +111,9 @@ class BcryptWrapper(LiteXModule):
             p = BcryptProxy(n_cores=cores_per_proxy)
             self.add_module(name=f"proxy{i}", module=p)
             self.comb += [
-                # Mode.
+                # Mode and Reset.
                 p.mode_cmp.eq(self._ctrl.fields.mode_cmp),
+                p.rst.eq(core_rst),
 
                 # TX to proxy.
                 p.din.eq(core_din),

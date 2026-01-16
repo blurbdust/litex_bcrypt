@@ -61,7 +61,9 @@ module bcrypt #(
 	input [NUM_CORES-1:0] core_init_ready, core_crypt_ready,
 	output [NUM_CORES-1:0] core_rd_en,
 	input [NUM_CORES-1:0] core_empty,
-	input [NUM_CORES-1:0] core_dout
+	input [NUM_CORES-1:0] core_dout,
+	// Reset signal for cores/proxies
+	output core_rst
 	);
 
 	assign CLK = CORE_CLK;
@@ -158,12 +160,17 @@ module bcrypt #(
 	localparam PKT_TYPE_WORD_GEN = 2;
 	localparam PKT_TYPE_CMP_CONFIG = 3;
 	localparam PKT_TYPE_TEMPLATE_LIST = 4;
+	localparam PKT_TYPE_RESET = 5;
 
-	localparam PKT_MAX_TYPE = 4;
+	localparam PKT_MAX_TYPE = 5;
 
 
 	wire [`MSB(PKT_MAX_TYPE):0] inpkt_type;
 	wire [15:0] inpkt_id;
+
+	// reset_complete pulses for 1 cycle after a reset packet is fully processed
+	// (including trailing checksum verification)
+	wire reset_complete;
 
 	inpkt_header #(
 		.VERSION(VERSION),
@@ -172,17 +179,27 @@ module bcrypt #(
 		.DISABLE_CHECKSUM(SIMULATION)
 	) inpkt_header(
 		.CLK(CLK),
+		.rst(reset_complete),  // Feed reset_complete back to clear inpkt_header state
 		.din(din),
 		.wr_en(rd_en),
 		.pkt_type(inpkt_type), .pkt_id(inpkt_id), .pkt_data(inpkt_data),
 		.pkt_end(inpkt_end),
 		.err_pkt_version(err_pkt_version), .err_pkt_type(err_inpkt_type),
-		.err_pkt_len(err_inpkt_len), .err_pkt_checksum(err_inpkt_checksum)
+		.err_pkt_len(err_inpkt_len), .err_pkt_checksum(err_inpkt_checksum),
+		.reset_complete(reset_complete)
 	);
 
 	// input packet processing: read enable
+	// Note: reset packets (type 5) need rd_en during DATA state to drain payload and checksum
+	wire reset_pkt_active = (inpkt_type == PKT_TYPE_RESET) & inpkt_data;
 	assign rd_en = ~empty
-			& (~inpkt_data | word_gen_conf_en | word_list_wr_en | cmp_config_wr_en);
+			& (~inpkt_data | word_gen_conf_en | word_list_wr_en | cmp_config_wr_en | reset_pkt_active);
+
+	// Use reset_complete for all subsystem resets - fires after entire packet processed
+	wire reset_pkt = reset_complete;
+
+	// Expose reset to cores/proxies
+	assign core_rst = reset_complete;
 
 
 	// **************************************************
@@ -288,7 +305,8 @@ module bcrypt #(
 	wire [31:0] cmp_config_dout;
 
 	bcrypt_cmp_config cmp_config(
-		.CLK(CLK), .din(din), .wr_en(cmp_config_wr_en), .full(cmp_config_full),
+		.CLK(CLK), .rst(reset_pkt),
+		.din(din), .wr_en(cmp_config_wr_en), .full(cmp_config_full),
 		.mode_cmp(mode_cmp),
 		.error(err_cmp_config),
 
@@ -310,7 +328,7 @@ module bcrypt #(
 	wire [31:0] ek_dout;
 
 	bcrypt_expand_key_b bcrypt_expand_key(
-		.CLK(CLK),
+		.CLK(CLK), .rst(reset_pkt),
 		.din(word_gen_dout), .rd_addr(word_gen_rd_addr),
 		.word_set_empty(word_gen_set_empty), .word_empty(word_gen_empty),
 		.sign_extension_bug(sign_extension_bug),
@@ -342,7 +360,7 @@ module bcrypt #(
 	wire [15:0] bcdata_pkt_id;
 
 	bcrypt_data bcrypt_data(
-		.CLK(CLK),
+		.CLK(CLK), .rst(reset_pkt),
 		.pkt_id(pkt_id), .word_id(word_id_out), .gen_id(gen_id), .gen_end(gen_end),
 		// read expanded key (EK)
 		.ek_in(ek_dout),
@@ -390,6 +408,7 @@ module bcrypt #(
 		.NUM_CORES(NUM_CORES)
 		) arbiter(
 		.CLK(CLK), .mode_cmp(mode_cmp),
+		.rst(reset_pkt),
 
 		// Packages of data for cores
 		.din(bcdata_dout), .ctrl(bcdata_ctrl),
@@ -430,6 +449,7 @@ module bcrypt #(
 	// **************************************************
 	comparator comparator(
 		.CLK(CLK),
+		.rst(reset_pkt),
 		// cmp_config
 		.din(cmp_din), .wr_en(cmp_wr_en),
 		.wr_addr(cmp_wr_addr), .hash_count(hash_count),
@@ -452,6 +472,7 @@ module bcrypt #(
 		.HASH_NUM_MSB(`HASH_NUM_MSB), .SIMULATION(SIMULATION)
 	) outpkt(
 		.CLK(CLK),
+		.rst(reset_pkt),
 		.din(arbiter_dout), .rd_addr(arbiter_rd_addr),
 		.source_not_empty(~arbiter_empty),
 		.wr_en(outpkt_wr_en), .full(outpkt_full),
@@ -517,8 +538,12 @@ module bcrypt #(
 	input [NUM_CORES-1:0] core_init_ready, core_crypt_ready,
 	output [NUM_CORES-1:0] core_rd_en,
 	input [NUM_CORES-1:0] core_empty,
-	input [NUM_CORES-1:0] core_dout
+	input [NUM_CORES-1:0] core_dout,
+	// Reset signal for cores/proxies
+	output core_rst
 	);
+
+	assign core_rst = 0; // Non-simulation stub
 
 endmodule
 

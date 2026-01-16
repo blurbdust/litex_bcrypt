@@ -14,6 +14,7 @@ module bcrypt_arbiter #(
 	)(
 	input CLK,
 	input mode_cmp,
+	input rst,
 
 	// Packages of data from bcrypt_data for cores
 	input [7:0] din,
@@ -120,10 +121,22 @@ module bcrypt_arbiter #(
 	reg [3:0] state_wr = STATE_WR_IDLE;
 
 	always @(posedge CLK) begin
-		if (state_wr == STATE_WR_IDLE | delay_shr[31])
-			delay_shr <= { delay_shr[30:0], state_wr == STATE_WR_IDLE };
+		if (rst) begin
+			// Reset accounting and state
+			num_processed_in <= 0;
+			inpkt_done <= 0;
+			state_wr <= STATE_WR_IDLE;
+			wr_core_num <= 0;
+			core_wr_en <= 0;
+			start_data_tx <= 0;
+			start_init_tx <= 0;
+			delay_shr <= 0;
+		end
+		else begin
+			if (state_wr == STATE_WR_IDLE | delay_shr[31])
+				delay_shr <= { delay_shr[30:0], state_wr == STATE_WR_IDLE };
 
-		case (state_wr)
+			case (state_wr)
 		STATE_WR_IDLE: if (delay_shr[31])
 			state_wr <= STATE_WR_CHECK_CORE_INIT_READY;
 
@@ -209,7 +222,8 @@ module bcrypt_arbiter #(
 			state_wr <= STATE_WR_CHECK_CORE_DATA_READY;
 		end
 		endcase
-	end
+		end // else
+	end // always
 
 	delay #(.NBITS(9)) data_ready_timeout_inst (.CLK(CLK),
 			.in(state_wr == STATE_WR_CHECK_CORE_DATA_READY),
@@ -222,7 +236,9 @@ module bcrypt_arbiter #(
 	reg recv_item = 0;
 	reg [`MSB(TOTAL_IN_PROCESSING-1) :0] total_in_processing = 0;
 	always @(posedge CLK)
-		if (start_data_tx & ~bcdata_gen_end) begin
+		if (rst)
+			total_in_processing <= 0;
+		else if (start_data_tx & ~bcdata_gen_end) begin
 			if (~recv_item)
 				total_in_processing <= total_in_processing + 1'b1;
 		end
@@ -296,25 +312,51 @@ module bcrypt_arbiter #(
 	reg [3:0] state_rd = STATE_RD_IDLE;
 
 	always @(posedge CLK) begin
-		if (recv_item)
-			recv_item <= 0;
-
-		if (rd_tmp_wr_en)
-			rd_tmp_wr_en <= 0;
-
-		if (pkt_id_wr_en)
-			pkt_id_wr_en <= 0;
-		if (cmp0_wr_en)
-			cmp0_wr_en <= 0;
-		if (cmp1_wr_en)
-			cmp1_wr_en <= 0;
-		if (cmp_start)
+		if (rst) begin
+			// Reset accounting and state
+			num_processed <= 0;
+			outpkt_done <= 0;
+			empty <= 1;
+			state_rd <= STATE_RD_IDLE;
+			rd_core_num <= 0;
+			core_rd_en <= 0;
 			cmp_start <= 0;
+			recv_item <= 0;
+			delay_shr2 <= 0;
+			rd_count <= 0;
+			rd_tmp <= 0;
+			result_word_count <= 0;
+			rd_tmp_wr_en <= 0;
+			pkt_id_wr_en <= 0;
+			cmp0_wr_en <= 0;
+			cmp1_wr_en <= 0;
+			// Reset output packet state
+			outpkt_type <= 0;
+			cmp_data <= 0;
+			hash_num <= 0;
+			pkt_id <= 0;
+			cmp_result <= 0;
+		end
+		else begin
+			if (recv_item)
+				recv_item <= 0;
 
-		if (state_rd == STATE_RD_IDLE | delay_shr2[31])
-			delay_shr2 <= { delay_shr2[30:0], state_rd == STATE_RD_IDLE };
+			if (rd_tmp_wr_en)
+				rd_tmp_wr_en <= 0;
 
-		case(state_rd)
+			if (pkt_id_wr_en)
+				pkt_id_wr_en <= 0;
+			if (cmp0_wr_en)
+				cmp0_wr_en <= 0;
+			if (cmp1_wr_en)
+				cmp1_wr_en <= 0;
+			if (cmp_start)
+				cmp_start <= 0;
+
+			if (state_rd == STATE_RD_IDLE | delay_shr2[31])
+				delay_shr2 <= { delay_shr2[30:0], state_rd == STATE_RD_IDLE };
+
+			case(state_rd)
 		STATE_RD_IDLE: if (delay_shr2[31])
 			state_rd <= STATE_RD_CHECK_NOT_EMPTY;
 
@@ -438,6 +480,7 @@ module bcrypt_arbiter #(
 		STATE_RD_ERROR: begin
 		end
 		endcase
+		end // else
 	end
 
 endmodule

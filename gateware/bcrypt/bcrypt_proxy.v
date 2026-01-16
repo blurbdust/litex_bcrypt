@@ -28,6 +28,7 @@ module bcrypt_proxy #(
 	parameter CORES_NOT_DUMMY = 0
 	)(
 	input CLK,
+	input rst,
 	input mode_cmp,
 
 	// Packages of data from bcrypt_data via arbiter for cores
@@ -84,6 +85,11 @@ module bcrypt_proxy #(
 	reg [1:0] state_in = STATE_IN_NONE;
 
 	always @(posedge CLK) begin
+		if (rst) begin
+			state_in <= STATE_IN_NONE;
+			wr_core_select <= 0;
+		end
+		else begin
 		case(state_in)
 		STATE_IN_NONE: begin
 			if (wr_en & ctrl == `CTRL_DATA_START) begin
@@ -110,6 +116,7 @@ module bcrypt_proxy #(
 			state_in <= STATE_IN_NONE;
 
 		endcase
+		end
 	end
 
 	assign crypt_ready = |core_crypt_ready;
@@ -141,7 +148,7 @@ module bcrypt_proxy #(
 
 			(* KEEP_HIERARCHY="true" *)
 			bcrypt_core core(
-				.CLK(CLK), .mode_cmp(mode_cmp),
+				.CLK(CLK), .rst(rst), .mode_cmp(mode_cmp),
 				.din(din),
 				.start(wr_core_select[i] && state_in == STATE_IN_START),
 				.byte_wr_en({ byte_wr_en_r[3:1], byte_wr_en_r[0] & wr_core_select[i] }),
@@ -158,7 +165,7 @@ module bcrypt_proxy #(
 
 			(* KEEP_HIERARCHY="true" *)
 			bcrypt_core_dummy core(
-				.CLK(CLK), .mode_cmp(mode_cmp),
+				.CLK(CLK), .rst(rst), .mode_cmp(mode_cmp),
 				.din(din),
 				.start(wr_core_select[i] && state_in == STATE_IN_START),
 				.byte_wr_en({ byte_wr_en_r[3:1], byte_wr_en_r[0] & wr_core_select[i] }),
@@ -198,6 +205,12 @@ module bcrypt_proxy #(
 	reg [1:0] state_out = STATE_OUT_NONE;
 
 	always @(posedge CLK) begin
+		if (rst) begin
+			state_out <= STATE_OUT_NONE;
+			rd_core_num <= 0;
+			core_rd_en <= 0;
+		end
+		else begin
 		case(state_out)
 		STATE_OUT_NONE: begin
 			if (~core_empty[rd_core_num])
@@ -219,6 +232,7 @@ module bcrypt_proxy #(
 				state_out <= STATE_OUT_NONE;
 		end
 		endcase
+		end
 	end
 
 	assign empty = ~(state_out == STATE_OUT_EMPTY);
@@ -233,6 +247,7 @@ endmodule
 
 module bcrypt_core_dummy (
 	input CLK,
+	input rst,
 	input mode_cmp,
 	input [3:0] byte_wr_en,
 	input [7:0] din,
@@ -253,6 +268,6 @@ module bcrypt_core_dummy (
 	assign dout = dout_r;
 
 	always @(posedge CLK)
-		dout_r <= mode_cmp ^ ^din ^ ^byte_wr_en ^ start ^ rd_en;
+		dout_r <= mode_cmp ^ ^din ^ ^byte_wr_en ^ start ^ rd_en ^ rst;
 
 endmodule

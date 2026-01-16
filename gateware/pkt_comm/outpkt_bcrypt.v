@@ -16,6 +16,7 @@ module outpkt_bcrypt #(
 	parameter SIMULATION = 0
 	)(
 	input CLK,
+	input rst,
 
 	output reg full = 1,
 	input source_not_empty,
@@ -79,6 +80,18 @@ module outpkt_bcrypt #(
 	reg [3:0] state = STATE_NONE;
 
 	always @(posedge CLK) begin
+		if (rst) begin
+			// Reset all state
+			state <= STATE_NONE;
+			full <= 1;
+			pkt_empty <= 1;
+			pkt_dout <= 0;
+			count <= 0;
+			pkt_new <= 1;
+			pkt_end <= 0;
+			rd_addr <= 0;
+		end
+		else begin
 		if (~pkt_empty) begin
 			if (checksum_wr_en) begin
 				pkt_empty <= 1;
@@ -106,7 +119,7 @@ module outpkt_bcrypt #(
 				16'h0;
 
 			pkt_new <= count == 0 ? 1'b1 : 1'b0;
-			
+
 			pkt_empty <= 0;
 			if (count == 4) begin
 				count <= 0;
@@ -178,16 +191,17 @@ module outpkt_bcrypt #(
 			full <= 0;
 			state <= STATE_RD;
 		end
-		
+
 		STATE_RD: if (wr_en) begin
 			full <= 1;
 			state <= STATE_RD_WAIT;
 		end
-		
+
 		STATE_RD_WAIT:
 			state <= STATE_NONE;
-		
+
 		endcase
+		end // else
 	end
 
 
@@ -214,6 +228,7 @@ module outpkt_bcrypt #(
 
 	outpkt_checksum outpkt_checksum(
 		.CLK(CLK),
+		.rst(rst),
 		.din(pkt_dout), .pkt_new(pkt_new), .pkt_end(pkt_end),
 		.wr_en(checksum_wr_en), .full(checksum_full),
 

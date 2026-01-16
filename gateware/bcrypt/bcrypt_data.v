@@ -12,6 +12,7 @@
 
 module bcrypt_data(
 	input CLK,
+	input rst,
 
 	// Input from word_gen
 	input [31:0] gen_id,
@@ -148,6 +149,28 @@ module bcrypt_data(
 	reg [3:0] state_out = STATE_OUT_IDLE;
 
 	always @(posedge CLK) begin
+		if (rst) begin
+			// Reset input FSM state
+			state_in <= STATE_IN_IDLE;
+			cmp_configured <= 0;
+			cmp_config_applied <= 0;
+			cmp_config_addr <= 0;
+			ek_full <= 1;
+			P_count_in <= 0;
+			// Reset output FSM state
+			state_out <= STATE_OUT_IDLE;
+			data_ready <= 0;
+			init_ready <= 1;
+			bcdata_gen_end <= 0;
+			data_tx_done <= 0;
+			init_tx_done <= 0;
+			P_count_out <= 0;
+			byte_count <= 0;
+			S_count <= 0;
+			ctrl <= 0;
+			error <= 0;
+		end
+		else begin
 		case (state_in)
 		STATE_IN_IDLE: begin
 			if (ek_valid) begin
@@ -331,7 +354,8 @@ module bcrypt_data(
 		STATE_OUT_ERROR: begin
 		end
 		endcase
-	end
+		end // else
+	end // always
 
 	assign P_in =
 		(state_in == STATE_IN_CMP_DATA | state_in == STATE_IN_ITER_SALT) ? cmp_config_data :

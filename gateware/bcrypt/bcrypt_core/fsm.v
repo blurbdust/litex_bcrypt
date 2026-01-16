@@ -13,6 +13,7 @@
 
 module fsm(
 	input CLK,
+	input rst,
 	input [2**`MC_NBITS_CONDITION-1:0] Condition_Signals,
 	input Exception_S_rd,
 
@@ -66,6 +67,29 @@ module fsm(
 	reg x = 0;
 
 	always @(posedge CLK) begin
+		if (rst) begin
+			// Reset FSM to initial state
+			IP <= 0;
+			IP_saved <= 0;
+			Extra_Controls <= `E_X_;
+			PS_input_select <= 0;
+			decr <= 0;
+			PN_wr_en <= 0;
+			PD_wr_en <= 0;
+			PNWAR_op <= `PNWAR_X_;
+			PNAR_op <= `PNAR_X_;
+			PDAR_op <= `PDAR_X_;
+			L_input_select <= 0;
+			Ltmp_wr_en <= 0;
+			LR_zero <= 0;
+			L_wr_en <= 0;
+			R_wr_en <= 0;
+			S_wr_en <= 0;
+			S_rd_en <= 0;
+			S_rst <= 0;
+			SWAR_op <= 0;
+		end
+		else begin
 		Extra_Controls <= MC_E;
 		{ decr, PS_input_select } <= MC_PN_input_select;
 		{ PN_wr_en, PD_wr_en, PNWAR_op, PNAR_op, PDAR_op } <= MC_P;
@@ -127,6 +151,7 @@ module fsm(
 			IP <= MC_jump_addr;
 		else if (MC_flow == `FLOW_NEXT)
 			IP <= IP + 1'b1;
+		end // else (not rst)
 	end
 
 endmodule

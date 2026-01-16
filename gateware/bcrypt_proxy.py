@@ -36,6 +36,7 @@ class BcryptProxy(LiteXModule):
         # Control.
         # --------
         self.mode_cmp = Signal(reset=1)  # default to compare mode.
+        self.rst      = Signal()         # reset signal from bcrypt core.
 
         # Instance.
         # ---------
@@ -45,6 +46,7 @@ class BcryptProxy(LiteXModule):
             p_CORES_NOT_DUMMY = cores_not_dummy,
 
             i_CLK             = ClockSignal("sys"),
+            i_rst             = self.rst,
             i_mode_cmp        = self.mode_cmp,
 
             i_din             = self.din,

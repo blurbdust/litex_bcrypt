@@ -41,6 +41,7 @@ static void litepcie_close_dev(int fd) {
 #define PKT_TYPE_WORD_LIST  0x01
 #define PKT_TYPE_WORD_GEN   0x02
 #define PKT_TYPE_CMP_CONFIG 0x03
+#define PKT_TYPE_RESET      0x05
 
 static void le16(uint16_t x, uint8_t *out) {
     out[0] = x & 0xFF;
@@ -211,6 +212,33 @@ static uint32_t wait_recorder(int fd) {
     uint32_t recorder_len = litepcie_readl(fd, CSR_RECORDER_COUNT_ADDR);
     printf("Recorder captured %u bytes.\n", recorder_len);
     return recorder_len;
+}
+
+static void send_reset(int fd) {
+    /* Send reset packet to clear FPGA state */
+    const uint32_t timeout = 10000000;
+    uint32_t cnt = 0;
+
+    uint8_t reset_pl[] = {0xCC};  /* Minimal payload with magic byte */
+    uint8_t hdr[10];
+    build_header(hdr, PKT_TYPE_RESET, 0x0000, sizeof(reset_pl), PKT_VERSION);
+    uint8_t pkt_reset[32];
+    size_t pkt_reset_len = 0;
+    add_checksums(pkt_reset, &pkt_reset_len, hdr, 10, reset_pl, sizeof(reset_pl));
+
+    printf("Sending reset packet to clear FPGA state...\n");
+    write_bytes(fd, STREAMER_MEM_BASE, pkt_reset, pkt_reset_len);
+    litepcie_writel(fd, CSR_STREAMER_LENGTH_ADDR, pkt_reset_len);
+    litepcie_writel(fd, CSR_STREAMER_KICK_ADDR, 0);
+    litepcie_writel(fd, CSR_STREAMER_KICK_ADDR, 1);
+    while (!litepcie_readl(fd, CSR_STREAMER_DONE_ADDR)) {
+        cnt++;
+        if (cnt >= timeout) {
+            fprintf(stderr, "reset streamer timeout\n");
+            exit(1);
+        }
+    }
+    printf("  \xe2\x86\x92 reset complete\n");
 }
 
 /* Base64 helpers (custom alphabet) ------------------------------------------*/
@@ -707,6 +735,7 @@ static void help(void) {
            "\n"
            "Options:\n"
            "-h            Display this help message.\n"
+           "-r            Send reset packet before test to clear FPGA state.\n"
            "-w wordlist   Path to wordlist file (one word per line).\n"
            "-c hash       Hash string to print after the words and use for config.\n");
     exit(1);
@@ -718,11 +747,15 @@ int main(int argc, char **argv) {
     int opt;
     const char *wordlist_path = NULL;
     const char *hash_str = NULL;
+    int do_reset = 0;
 
-    while ((opt = getopt(argc, argv, "hw:c:")) != -1) {
+    while ((opt = getopt(argc, argv, "hrw:c:")) != -1) {
         switch (opt) {
         case 'h':
             help();
+            break;
+        case 'r':
+            do_reset = 1;
             break;
         case 'w':
             wordlist_path = optarg;
@@ -746,6 +779,11 @@ int main(int argc, char **argv) {
              "/dev/litepcie%d", litepcie_device_num);
 
     int fd = litepcie_open_dev();
+
+    if (do_reset) {
+        send_reset(fd);
+    }
+
     cleanup_test(fd, wordlist_path, hash_str);
     litepcie_close_dev(fd);
     return 0;

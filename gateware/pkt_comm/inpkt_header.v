@@ -41,9 +41,11 @@ module inpkt_header #(
 	parameter PKT_MAX_LEN = 65536,
 	parameter PKT_MAX_TYPE = -1,
 	parameter PKT_TYPE_MSB = `MSB(PKT_MAX_TYPE),
-	parameter DISABLE_CHECKSUM = 0
+	parameter DISABLE_CHECKSUM = 0,
+	parameter PKT_TYPE_RESET = 5
 	)(
 	input CLK,
+	input rst,
 	input [7:0] din,
 	input wr_en,
 
@@ -51,7 +53,9 @@ module inpkt_header #(
 	output reg [15:0] pkt_id,
 	output pkt_data, // asserts when it goes packet data
 	output pkt_end, // asserts when it goes the last byte of data
-	output reg err_pkt_version = 0, err_pkt_type = 0, err_pkt_len = 0, err_pkt_checksum = 0
+	output reg err_pkt_version = 0, err_pkt_type = 0, err_pkt_len = 0, err_pkt_checksum = 0,
+	// Pulses high for 1 cycle when a reset packet has been fully processed
+	output reg reset_complete = 0
 	);
 
 	
@@ -65,6 +69,8 @@ module inpkt_header #(
 	reg checksum_check_flag = 0;
 	// flag is set when header is processed, cleared when data starts
 	reg pkt_header = 1;
+	// flag is set when we're processing a reset packet
+	reg was_reset_pkt = 0;
 
 	reg [PKT_LEN_MSB:0] pkt_byte_count_max, pkt_byte_count_max_tmp;
 	reg [PKT_LEN_MSB:0] pkt_byte_count;
@@ -88,20 +94,44 @@ module inpkt_header #(
 
 	// Verify checksum regardless of wr_en
 	always @(posedge CLK)
-		if (checksum_check_flag) begin
+		if (rst)
+			err_pkt_checksum <= 0;
+		else if (checksum_check_flag) begin
 			if (~checksum != checksum_tmp & ~DISABLE_CHECKSUM[0])
 				err_pkt_checksum <= 1;
 		end
 
 	always @(posedge CLK) begin
-		if (err_pkt_checksum)
+		// Clear reset_complete after one cycle (unless it's being set this cycle)
+		if (reset_complete && !was_reset_pkt)
+			reset_complete <= 0;
+
+		// Reset state machine and all state after reset packet is fully processed
+		// rst has PRIORITY over wr_en - use else to prevent state machine from running during reset
+		if (rst) begin
+			err_pkt_version <= 0;
+			err_pkt_type <= 0;
+			err_pkt_len <= 0;
+			was_reset_pkt <= 0;
+			reset_complete <= 0;
+			// Clear checksum state to prevent false errors on next packet
+			checksum_check_flag <= 0;
+			checksum <= 0;
+			checksum_tmp <= 0;
+			checksum_byte_count <= 0;
+			// Reset state machine to initial state
+			pkt_state <= PKT_STATE_VERSION;
+			pkt_header <= 1;
+			pkt_byte_count <= 0;
+		end
+		else if (err_pkt_checksum) begin
 			pkt_state <= PKT_STATE_ERROR;
-			
-		if (wr_en) begin
+		end
+		else if (wr_en) begin
 			if (pkt_state != PKT_STATE_CHECKSUM & ~(pkt_state == PKT_STATE_VERSION & !din)) begin
 
 				checksum_check_flag <= 0;
-			
+
 				if (checksum_byte_count == 0) begin
 					checksum_tmp[31:8] <= 0;
 					if (~checksum_check_flag)
@@ -133,7 +163,8 @@ module inpkt_header #(
 			PKT_STATE_TYPE: begin
 				pkt_header <= 1;
 				pkt_byte_count <= 0;
-				
+				was_reset_pkt <= (din[PKT_TYPE_MSB:0] == PKT_TYPE_RESET);
+
 				if (din == 0 || din[PKT_TYPE_MSB:0] > PKT_MAX_TYPE || din[7:PKT_TYPE_MSB+1]) begin
 					// wrong packet type
 					err_pkt_type <= 1;
@@ -144,11 +175,11 @@ module inpkt_header #(
 					pkt_state <= PKT_STATE_RESERVED0_0;
 				end
 			end
-			
+
 			PKT_STATE_RESERVED0_0: begin
 				pkt_state <= PKT_STATE_RESERVED0_1;
 			end
-			
+
 			PKT_STATE_RESERVED0_1: begin
 				pkt_state <= PKT_STATE_LEN0;
 			end
@@ -158,7 +189,7 @@ module inpkt_header #(
 				pkt_byte_count_max_tmp[7:0] <= din;
 				pkt_state <= PKT_STATE_LEN1;
 			end
-			
+
 			PKT_STATE_LEN1: begin
 				//pkt_byte_count_max[15:8] <= din;
 				pkt_byte_count_max_tmp[15:8] <= din;
@@ -168,7 +199,7 @@ module inpkt_header #(
 			PKT_STATE_LEN2: begin
 				//pkt_byte_count_max <= { din[PKT_LEN_MSB-16:0], pkt_byte_count_max[15:0] } - 1'b1;
 				pkt_byte_count_max <= { din[PKT_LEN_MSB-16:0], pkt_byte_count_max_tmp[15:0] } - 1'b1;
-				
+
 				//if ( din[7:PKT_LEN_MSB-16+1] || !(din[PKT_LEN_MSB-16:0] || pkt_byte_count_max[15:0]) ) begin
 				if ( din[7:PKT_LEN_MSB-16+1] || !(din[PKT_LEN_MSB-16:0] || pkt_byte_count_max_tmp[15:0]) ) begin
 					// wrong packet length
@@ -204,11 +235,11 @@ module inpkt_header #(
 				else
 					pkt_byte_count <= pkt_byte_count + 1'b1;
 			end
-			
+
 			PKT_STATE_CHECKSUM: begin
 				checksum_tmp[8*(checksum_byte_count+1)-1 -:8] <= din;
 				checksum_byte_count <= checksum_byte_count + 1'b1;
-				
+
 				if (checksum_byte_count == 0) begin
 					checksum <= checksum + checksum_tmp;
 				end
@@ -216,17 +247,21 @@ module inpkt_header #(
 					checksum_check_flag <= 1;
 					// Suppose checksum_byte_count is a power of 2
 					//checksum_byte_count <= 0;
-					if (~pkt_header) //pkt_byte_count == pkt_byte_count_max) <-- bug caused error if pkt_len=1
+					if (~pkt_header) begin //pkt_byte_count == pkt_byte_count_max) <-- bug caused error if pkt_len=1
 						pkt_state <= PKT_STATE_VERSION;
+						// Generate reset_complete when finishing a reset packet
+						reset_complete <= was_reset_pkt;
+						was_reset_pkt <= 0;
+					end
 					else
 						pkt_state <= PKT_STATE_DATA;
 				end
 			end
-			
+
 			PKT_STATE_ERROR: begin
 			end
 			endcase
-			
+
 		end // wr_en
 	end
 

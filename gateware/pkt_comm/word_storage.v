@@ -16,7 +16,8 @@ module word_storage #(
 	parameter WORD_MAX_LEN = -1
 	)(
 	input CLK,
-	
+	input rst,
+
 	input [7:0] din,
 	input [`MSB(WORD_MAX_LEN-1):0] wr_addr,
 	input wr_en,
@@ -44,6 +45,11 @@ module word_storage #(
 	reg [1:0] state = STATE_WR;
 	
 	always @(posedge CLK) begin
+		if (rst) begin
+			full <= 0;
+			state <= STATE_WR;
+		end
+		else begin
 		case (state)
 		STATE_WR: begin
 			if (wr_en)
@@ -53,12 +59,13 @@ module word_storage #(
 				state <= STATE_RD;
 			end
 		end
-		
+
 		STATE_RD: if (set_empty) begin
 			full <= 0;
 			state <= STATE_WR;
 		end
 		endcase
+		end // else
 	end
 	
 endmodule

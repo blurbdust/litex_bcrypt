@@ -12,6 +12,7 @@
 
 module comparator(
 	input CLK,
+	input rst,
 
 	// Input from cmp_config
 	input [7:0] din,
@@ -22,9 +23,34 @@ module comparator(
 	// Iteraction with arbiter_rx (comparsion)
 	input [31:0] cmp_data,
 	input start,
-	output reg found = 0, finished = 0,
+	output found, finished,
 	output reg [`HASH_NUM_MSB:0] hash_num = 0
 	);
+
+	// **************************************************
+	//
+	// Comparator's state machine states
+	//
+	// **************************************************
+	localparam STATE_IDLE = 0,
+				STATE_START = 1,
+				STATE_START2 = 2,
+				STATE_COMPARE = 3;
+
+	(* FSM_EXTRACT="true" *)
+	reg [1:0] state = STATE_IDLE;
+
+	// Internal state registers for found/finished
+	// These are masked combinationally to prevent race conditions
+	reg found_r = 0;
+	reg finished_r = 0;
+
+	// Combinational outputs - masked when comparison not complete
+	// result_valid is only true when in STATE_IDLE after a comparison completed
+	// This eliminates the 1-cycle race window caused by non-blocking assignments
+	wire result_valid = (state == STATE_IDLE);
+	assign found = found_r & result_valid;
+	assign finished = finished_r & result_valid;
 
 
 	// **************************************************
@@ -51,58 +77,55 @@ module comparator(
 		.i(mem_dout), .o(mem_dout_r)
 	);
 
-
-	// **************************************************
-	//
-	// Comparator's function.
-	// It iterates the list linearily.
-	//
-	// **************************************************
-	localparam STATE_IDLE = 0,
-				STATE_START = 1,
-				STATE_START2 = 2,
-				STATE_COMPARE = 3;
-
-	(* FSM_EXTRACT="true" *)
-	reg [1:0] state = STATE_IDLE;
-
 	always @(posedge CLK) begin
-		case (state)
-		STATE_IDLE: if (start) begin
+		if (rst) begin
+			// Reset all state
+			found_r <= 0;
+			finished_r <= 0;
+			state <= STATE_IDLE;
 			rd_addr <= 0;
-			state <= STATE_START;
-		end
-
-		STATE_START: begin
-			found <= 0;
-			finished <= 0;
 			hash_count_curr <= 1;
 			hash_num <= 0;
-			rd_addr <= rd_addr + 1'b1;
-			state <= STATE_START2;
 		end
-
-		STATE_START2: begin
-			rd_addr <= rd_addr + 1'b1;
-			state <= STATE_COMPARE;
-		end
-
-		STATE_COMPARE: begin
-			rd_addr <= rd_addr + 1'b1;
-			hash_count_curr <= hash_count_curr + 1'b1;
-			if (hash_count_curr == hash_count) begin
-				finished <= 1;
-				state <= STATE_IDLE;
+		else begin
+			case (state)
+			STATE_IDLE: if (start) begin
+				rd_addr <= 0;
+				found_r <= 0;      // Clear internal register immediately
+				finished_r <= 0;  // Clear internal register immediately
+				state <= STATE_START;
 			end
 
-			if (mem_dout_r == cmp_data) begin
-				found <= 1;
-				state <= STATE_IDLE;
+			STATE_START: begin
+				// found_r/finished_r already cleared in STATE_IDLE
+				hash_count_curr <= 1;
+				hash_num <= 0;
+				rd_addr <= rd_addr + 1'b1;
+				state <= STATE_START2;
 			end
-			else
-				hash_num <= hash_num + 1'b1;
+
+			STATE_START2: begin
+				rd_addr <= rd_addr + 1'b1;
+				state <= STATE_COMPARE;
+			end
+
+			STATE_COMPARE: begin
+				rd_addr <= rd_addr + 1'b1;
+				hash_count_curr <= hash_count_curr + 1'b1;
+				if (hash_count_curr == hash_count) begin
+					finished_r <= 1;
+					state <= STATE_IDLE;
+				end
+
+				if (mem_dout_r == cmp_data) begin
+					found_r <= 1;
+					state <= STATE_IDLE;
+				end
+				else
+					hash_num <= hash_num + 1'b1;
+			end
+			endcase
 		end
-		endcase
 	end
 
 	assign rd_en = state != STATE_IDLE;

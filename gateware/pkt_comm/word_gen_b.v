@@ -38,7 +38,8 @@ module word_gen_b #(
 	parameter RANGE_INFO_MSB = 1 + `MSB(WORD_MAX_LEN-1)
 	)(
 	input CLK,
-	
+	input rst,
+
 	// Word generator configuration.
 	input [7:0] din,
 	input [15:0] inpkt_id,
@@ -153,13 +154,30 @@ module word_gen_b #(
 	reg [3:0] state = CONF_NUM_RANGES;
 	
 	always @(posedge CLK) begin
+		if (rst) begin
+			// Reset all state
+			state <= CONF_NUM_RANGES;
+			conf_full <= 0;
+			conf_num_generate <= 0;
+			zero_ranges_active <= 1;
+			last_range_num <= 0;
+			cur_range <= 0;
+			cur_range_count <= 0;
+			cur_range_count_max <= 0;
+			range_carry <= 1;
+			pkt_id <= 0;
+			gen_id <= 0;
+			word_rd_addr <= 0;
+			storage_wr_addr <= 0;
+		end
+		else begin
 		case (state)
 		//
 		// Generator configuration.
 		//
 		CONF_ERROR: begin
 		end
-		
+
 		CONF_NUM_RANGES: if (conf_wr_en) begin
 			zero_ranges_active <= 1;
 			pkt_id <= inpkt_id;
@@ -173,7 +191,7 @@ module word_gen_b #(
 			else
 				state <= CONF_NUM_GENERATE;
 		end
-		
+
 		CONF_RANGE_NUM_CHARS: if (conf_wr_en) begin
 			zero_ranges_active <= 0;
 			cur_range_count_max <= din_minus_1;
@@ -193,10 +211,10 @@ module word_gen_b #(
 		CONF_RANGE_CHARS: if (conf_wr_en) begin
 			//ranges [{cur_range, cur_range_count}] <= din;
 			cur_range_count <= cur_range_count + 1'b1;
-			
+
 			if (cur_range_count == range_count_max[cur_range]) begin
 				cur_range <= cur_range + 1'b1;
-				
+
 				if (cur_range == last_range_num)
 					state <= CONF_NUM_GENERATE;
 				else
@@ -227,7 +245,7 @@ module word_gen_b #(
 			else
 				state <= CONF_ERROR;
 		end
-		
+
 		//
 		// Generator operation.
 		//
@@ -239,14 +257,14 @@ module word_gen_b #(
 			if (cur_range == RANGES_MAX - 1)
 				state <= OP_COPY_NEXT_WORD;
 		end
-		
+
 		// Start processing new input word - copy into output buffer
 		OP_COPY_NEXT_WORD: if (~word_empty) begin
 			word_rd_addr <= word_rd_addr + 1'b1;
 			storage_wr_addr <= storage_wr_addr + 1'b1;
 			cur_range <= last_range_num;
 			range_carry <= 1;
-			
+
 			if (word_list_end)
 				state <= OP_WAIT_READ;
 			else if (storage_wr_addr == WORD_MAX_LEN - 1) begin
@@ -255,7 +273,7 @@ module word_gen_b #(
 				else
 					state <= OP_WAIT_READ;
 			end
-			
+
 			// Also copy ID (could need it if read the source after copying)
 			//word_id_out <= word_id;
 			//gen_end <= word_list_end;
@@ -267,7 +285,7 @@ module word_gen_b #(
 			cur_range_count_max <= range_count_max[cur_range];
 			state <= OP_NEXT_RANGE_2;
 		end
-			
+
 		OP_NEXT_RANGE_2: begin
 			if (range_carry) begin // Advance to the next char in the range
 				if (cur_range_count == cur_range_count_max) begin
@@ -282,7 +300,7 @@ module word_gen_b #(
 			//range_char <= ranges [{cur_range, cur_range_count}];
 			state <= OP_NEXT_RANGE_WR;
 		end
-		
+
 		OP_NEXT_RANGE_WR: begin // Write word_storage
 			// Advance pointer to the next range
 			cur_range <= cur_range - 1'b1;
@@ -291,7 +309,7 @@ module word_gen_b #(
 			else
 				state <= OP_NEXT_RANGE_1;
 		end
-		
+
 		// Wait until the reader reads generated word from the storage
 		OP_WAIT_READ: if (~storage_full) begin
 			range_carry <= 1;
@@ -312,6 +330,7 @@ module word_gen_b #(
 			end
 		end
 		endcase
+		end // else
 	end
 
 	always @(posedge CLK)
@@ -348,10 +367,11 @@ module word_gen_b #(
 	word_storage #( .WORD_MAX_LEN(WORD_MAX_LEN)
 	) word_storage(
 		.CLK(CLK),
+		.rst(rst),
 		.din(state == OP_COPY_NEXT_WORD ? word_in : range_char),
 		.wr_addr(storage_wr_addr), .wr_en(storage_wr_en),
 		.set_full(storage_set_full), .full(storage_full),
-		
+
 		.dout(dout), .rd_addr(rd_addr), .set_empty(set_empty), .empty(empty)
 	);
 

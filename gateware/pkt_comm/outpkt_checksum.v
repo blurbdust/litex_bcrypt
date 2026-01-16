@@ -10,6 +10,7 @@
 
 module outpkt_checksum(
 	input CLK,
+	input rst,
 	input [15:0] din,
 	input pkt_new, // asserted on 1st word of packet header
 	input pkt_end, // asserted on last word of packet data
@@ -36,6 +37,13 @@ module outpkt_checksum(
 	assign full = full_r;
 	
 	always @(posedge CLK) begin
+		if (rst) begin
+			full_r <= 0;
+			input_r <= 0;
+			pkt_new_r <= 0;
+			pkt_end_r <= 0;
+		end
+		else begin
 		if (wr_en & (~full_r | input_rd_en)) begin
 			input_r <= din;
 			pkt_new_r <= pkt_new;
@@ -44,6 +52,7 @@ module outpkt_checksum(
 		end
 		else if (input_rd_en)
 			full_r <= 0;
+		end // else
 	end
 
 	// Output register.
@@ -53,7 +62,9 @@ module outpkt_checksum(
 	assign empty = empty_r;
 
 	always @(posedge CLK)
-		if (rd_en & ~output_wr_en)
+		if (rst)
+			empty_r <= 1;
+		else if (rd_en & ~output_wr_en)
 			empty_r <= 1;
 		else if (output_wr_en & ~rd_en)
 			empty_r <= 0;
@@ -88,12 +99,23 @@ module outpkt_checksum(
 		& (empty_r | ~empty_r & rd_en);
 		
 	always @(posedge CLK) begin
+		if (rst) begin
+			state <= STATE_PKT_INPUT;
+			output_r <= 0;
+			pkt_end_out <= 0;
+			checksum <= 0;
+			checksum_tmp <= 0;
+			checksum_counter <= 0;
+			word_counter <= 0;
+			pkt_state <= 0;
+		end
+		else begin
 		if (state == STATE_PKT_INPUT) begin
 			if (output_wr_en) begin
 
 				output_r <= input_r;
 				pkt_end_out <= 0;
-				
+
 				if (pkt_new_r | ~checksum_counter) begin
 					checksum_tmp <= input_r;
 					checksum_counter <= 1;
@@ -102,7 +124,7 @@ module outpkt_checksum(
 					checksum <= checksum + {input_r, checksum_tmp};
 					checksum_counter <= 0;
 				end
-			
+
 				if (~pkt_state & word_counter == PKT_HEADER_LEN/2 - 1
 					//| word_counter == PKT_CHECKSUM_INTERVAL/2 - 1
 					| pkt_end_r
@@ -116,7 +138,7 @@ module outpkt_checksum(
 					word_counter <= word_counter + 1'b1;
 			end // input_rd_en
 		end
-		
+
 		else if (state == STATE_CHECKSUM0) begin
 			checksum <= checksum + checksum_tmp;
 			state <= STATE_CHECKSUM1;
@@ -128,7 +150,7 @@ module outpkt_checksum(
 				state <= STATE_CHECKSUM2;
 			end
 		end
-		
+
 		else if (state == STATE_CHECKSUM2) begin
 			if (output_wr_en) begin
 				output_r <= ~checksum[31:16];
@@ -136,12 +158,13 @@ module outpkt_checksum(
 					pkt_end_out <= 1;
 				checksum_counter <= 0;
 				checksum <= 0;
-				
+
 				pkt_state <= ~pkt_state;
 				word_counter <= 0;
 				state <= STATE_PKT_INPUT;
 			end
 		end
+		end // else
 	end
 
 

@@ -25,6 +25,7 @@ PKT_VERSION         = 2
 PKT_TYPE_WORD_LIST  = 0x01
 PKT_TYPE_WORD_GEN   = 0x02
 PKT_TYPE_CMP_CONFIG = 0x03
+PKT_TYPE_RESET      = 0x05
 
 def le16(x): return [x & 0xFF, (x >> 8) & 0xFF]
 def le24(x): return [x & 0xFF, (x >> 8) & 0xFF, (x >> 16) & 0xFF]
@@ -125,6 +126,102 @@ def wait_recorder(bus, timeout=10_000_000):
     print(f"Recorder captured {recorder_len} bytes.")
     return recorder_len
 
+def send_reset(bus):
+    """Send reset packet to clear FPGA state."""
+    reset_pl = [0xCC]  # Minimal payload with magic byte
+    reset_hdr = build_header(PKT_TYPE_RESET, 0x0000, len(reset_pl))
+    pkt_reset = add_checksums_around_payload(reset_hdr, reset_pl)
+    print("Sending reset packet to clear FPGA state...")
+    write_bytes(bus, STREAMER_MEM_BASE, pkt_reset)
+    bus.regs.streamer_length.write(len(pkt_reset))
+    bus.regs.streamer_kick.write(0)
+    bus.regs.streamer_kick.write(1)
+    cnt = 0
+    while not bus.regs.streamer_done.read():
+        cnt += 1
+        if cnt >= 10_000_000:
+            raise RuntimeError("reset streamer timeout")
+    print("  → reset complete")
+
+
+def drain_output_fifo(bus, short_timeout=5_000, max_packets=10):
+    """Drain any leftover packets from the output FIFO.
+
+    After a successful match, the FPGA outputs both CMP_RESULT and PACKET_DONE.
+    If the recorder only captures the first packet, the second remains in the
+    FIFO and will be captured on the next run, causing alternating behavior.
+
+    This function repeatedly starts the recorder with a short timeout until
+    no more data is captured.
+
+    Args:
+        bus: RemoteClient connection
+        short_timeout: iterations to wait before assuming FIFO is empty (default 5000)
+        max_packets: maximum packets to drain to prevent infinite loop (default 10)
+
+    Returns:
+        Total bytes drained
+    """
+    total_drained = 0
+    packets_drained = 0
+
+    while packets_drained < max_packets:
+        # Start recorder
+        bus.regs.recorder_kick.write(0)
+        bus.regs.recorder_kick.write(1)
+
+        # Wait with short timeout
+        cnt = 0
+        while not bus.regs.recorder_done.read():
+            cnt += 1
+            if cnt >= short_timeout:
+                # Timeout - no more data pending
+                if total_drained > 0:
+                    print(f"  → drained {packets_drained} packet(s), {total_drained} bytes total")
+                else:
+                    print("  → FIFO empty (nothing to drain)")
+                return total_drained
+
+        # Check how much was captured
+        captured = bus.regs.recorder_count.read()
+        if captured == 0:
+            # No data captured
+            if total_drained > 0:
+                print(f"  → drained {packets_drained} packet(s), {total_drained} bytes total")
+            else:
+                print("  → FIFO empty (nothing to drain)")
+            return total_drained
+
+        # Data was captured - read and display it
+        packets_drained += 1
+        total_drained += captured
+
+        discarded = read_bytes(bus, RECORDER_MEM_BASE, captured)
+        pkt_type = discarded[1] if len(discarded) > 1 else 0
+
+        # Parse and display packet contents
+        if pkt_type == 0xd2 and len(discarded) >= 18:
+            # PACKET_DONE: version(1) + type(1) + checksum(2) + len(4) + pkt_id(2) + checksum(4) + num_processed(4)
+            pkt_id = int.from_bytes(discarded[8:10], 'little')
+            num_processed = int.from_bytes(discarded[14:18], 'little')
+            print(f"  [drain] PACKET_DONE (0xd2): pkt_id=0x{pkt_id:04x}, num_processed={num_processed}")
+        elif pkt_type == 0xd4 and len(discarded) >= 22:
+            # CMP_RESULT: includes hash_num and result
+            pkt_id = int.from_bytes(discarded[8:10], 'little')
+            # Payload starts at offset 14: word_id(2) + gen_id(4) + hash_num(2) + result...
+            hash_num = int.from_bytes(discarded[20:22], 'little') if len(discarded) >= 22 else 0
+            print(f"  [drain] CMP_RESULT (0xd4): pkt_id=0x{pkt_id:04x}, hash_num={hash_num} (MATCH FOUND)")
+        elif pkt_type == 0xd3:
+            # RESULT (raw, no comparison)
+            pkt_id = int.from_bytes(discarded[8:10], 'little') if len(discarded) >= 10 else 0
+            print(f"  [drain] RESULT (0xd3): pkt_id=0x{pkt_id:04x}")
+        else:
+            print(f"  [drain] packet type 0x{pkt_type:02x}, {captured} bytes")
+            print(f"          raw: {' '.join(f'{b:02x}' for b in discarded[:min(32, len(discarded))])}")
+
+    print(f"  → drained {packets_drained} packet(s), {total_drained} bytes total (hit max)")
+    return total_drained
+
 
 def custom_b64decode(trans_table, s) -> bytes:
     """Decode string using the ./A-Za-z0-9 custom Base64 alphabet."""
@@ -165,6 +262,8 @@ def main():
                         help="Path to the wordlist file (one word per line).")
     parser.add_argument("-c", "--hash", required=True,
                         help="Hash string to print after the words.")
+    parser.add_argument("-r", "--reset", action="store_true",
+                        help="Send reset packet before starting test (ensures clean FPGA state).")
     args = parser.parse_args()
 
     wordlist_path = Path(args.wordlist)
@@ -209,6 +308,14 @@ def main():
 
     bus = RemoteClient()
     bus.open()
+
+    # Optional: send reset packet to ensure clean FPGA state
+    if args.reset:
+        send_reset(bus)
+
+    # Drain any leftover packets from previous runs
+    print("Draining output FIFO...")
+    drain_output_fifo(bus)
 
     # Build packets.
     cmp_id, wl_id, wg_id = 0x0001, 0x0002, 0x0003
@@ -271,6 +378,10 @@ def main():
         print("cracked")
         print(f"ID: {recorded_data[14]:02x}")
         print(args.hash + ":" + wordlist_[recorded_data[14]])
+
+    # Drain any remaining packets (e.g., PACKET_DONE after CMP_RESULT)
+    print("Draining remaining packets...")
+    drain_output_fifo(bus)
 
     bus.close()
     print("Test complete.")

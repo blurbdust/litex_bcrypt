@@ -36,6 +36,7 @@ module template_list_b #(
 	parameter RANGE_INFO_MSB = 1 + `MSB(WORD_MAX_LEN-1)
 	)(
 	input CLK,
+	input rst,
 
 	input [7:0] din,
 	input wr_en,
@@ -77,6 +78,20 @@ module template_list_b #(
 	reg [2:0] state = STATE_INIT;
 
 	always @(posedge CLK) begin
+		if (rst) begin
+			// Reset all state
+			state <= STATE_INIT;
+			range_info <= 0;
+			range_info_count <= 0;
+			word_list_end_r <= 0;
+			storage_wr_addr <= 0;
+			storage_set_full <= 0;
+			full <= 1;
+			word_id <= 0;
+			err_template <= 0;
+			err_word_list_count <= 0;
+		end
+		else begin
 		case (state)
 		STATE_INIT: begin
 			range_info <= 0;
@@ -193,6 +208,7 @@ module template_list_b #(
 			state <= STATE_INIT;
 
 		endcase
+		end // else
 	end
 
 	assign storage_wr_en = wr_en && state == STATE_WR_WORD || state == STATE_PAD_ZEROES;
@@ -202,6 +218,7 @@ module template_list_b #(
 	word_storage #( .WORD_MAX_LEN(WORD_MAX_LEN)
 	) word_storage(
 		.CLK(CLK),
+		.rst(rst),
 		.din(state == STATE_PAD_ZEROES ? 8'd0 : din), .wr_addr(storage_wr_addr),
 		.wr_en(storage_wr_en), .set_full(storage_set_full), .full(storage_full),
 

@@ -20,6 +20,7 @@ module bcrypt_wrapper #(
 	}
 	)(
 	input CLK,
+	input rst,
 	input mode_cmp,
 
 	// Packages of data from bcrypt_data for cores
@@ -88,7 +89,7 @@ module bcrypt_wrapper #(
 			.NUM_CORES(NUM_CORES), .DUMMY(DUMMY),
 			.CORES_NOT_DUMMY(PROXY_CONF[32*i+30 -:19])
 		) proxy(
-			.CLK(CLK), .mode_cmp(mode_cmp),
+			.CLK(CLK), .rst(rst), .mode_cmp(mode_cmp),
 
 			.din(REGS==1 ? din_r1 : din_r2),
 			.ctrl(REGS==1 ? ctrl_r1 : ctrl_r2),

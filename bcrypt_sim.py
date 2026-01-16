@@ -91,7 +91,7 @@ class SimSoC(SoCMini):
 
         self.ethphy = LiteEthPHYModel(self.platform.request("eth"))
         self.add_etherbone(phy=self.ethphy,
-            ip_address  = "192.168.1.50",
+            ip_address  = "192.168.9.50",
             mac_address = 0x10e2d5000001,
         )
 
@@ -159,7 +159,7 @@ def main():
 
     sim_config = SimConfig()
     sim_config.add_clocker("sys_clk", freq_hz=int(25e6))
-    sim_config.add_module("ethernet", "eth", args={"interface": "tap0", "ip": "192.168.1.100"})
+    sim_config.add_module("ethernet", "eth", args={"interface": "tap0", "ip": "192.168.9.100"})
 
     soc = SimSoC(
         num_proxies     = args.num_proxies,

@@ -20,6 +20,7 @@
 //
 module bcrypt_cmp_config(
 	input CLK,
+	input rst,
 
 	input [7:0] din,
 	input wr_en,
@@ -86,7 +87,21 @@ module bcrypt_cmp_config(
 	reg [3:0] state = STATE_SALT;
 
 	always @(posedge CLK) begin
-		if (state == STATE_ERROR) begin
+		if (rst) begin
+			// Reset all state
+			state <= STATE_SALT;
+			full <= 0;
+			new_cmp_config <= 0;
+			hash_count <= 0;
+			cmp_wr_addr <= {`HASH_NUM_MSB+3{1'b1}};
+			cmp_wr_en <= 0;
+			tmp <= 0;
+			wr_addr <= 1;
+			byte_count <= 0;
+			salt_word_count <= 0;
+			sign_extension_bug <= 0;
+		end
+		else if (state == STATE_ERROR) begin
 			full <= 1;
 		end
 

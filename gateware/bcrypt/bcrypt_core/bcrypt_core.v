@@ -40,6 +40,7 @@ module bcrypt_core #(
 	parameter ADDR_NBITS = 8
 	)(
 	input CLK,
+	input rst,
 	//input wr_en,
 	input mode_cmp,
 	input [7:0] din, // Input over 8-bit bus
@@ -85,22 +86,29 @@ module bcrypt_core #(
 	// Extra Controls.
 	//
 	wire [`MC_NBITS_E-1:0] Extra_Controls;
-	
+
 	always @(posedge CLK) begin
-		if (Extra_Controls == `E_SET_INIT_READY)
+		if (rst) begin
 			init_ready <= 1;
-		else if (Extra_Controls == `E_RST_INIT_READY)
-			init_ready <= 0;
-
-		if (Extra_Controls == `E_SET_CRYPT_READY)
-			crypt_ready <= 1;
-		else if (Extra_Controls == `E_RST_CRYPT_READY)
 			crypt_ready <= 0;
-
-		if (Extra_Controls == `E_SET_EMPTY)
 			empty <= 1;
-		else if (Extra_Controls == `E_RST_EMPTY)
-			empty <= 0;
+		end
+		else begin
+			if (Extra_Controls == `E_SET_INIT_READY)
+				init_ready <= 1;
+			else if (Extra_Controls == `E_RST_INIT_READY)
+				init_ready <= 0;
+
+			if (Extra_Controls == `E_SET_CRYPT_READY)
+				crypt_ready <= 1;
+			else if (Extra_Controls == `E_RST_CRYPT_READY)
+				crypt_ready <= 0;
+
+			if (Extra_Controls == `E_SET_EMPTY)
+				empty <= 1;
+			else if (Extra_Controls == `E_RST_EMPTY)
+				empty <= 0;
+		end
 	end
 	
 	// counter for Magic Words
@@ -207,6 +215,7 @@ module bcrypt_core #(
 
 	fsm fsm(
 		.CLK(CLK),
+		.rst(rst),
 		.Condition_Signals(Condition_Signals),
 		.Exception_S_rd(Exception_S_rd),
 		
@@ -228,6 +237,7 @@ endmodule
 
 module bcrypt_core (
 	input CLK,
+	input rst,
 	input mode_cmp,
 	input [3:0] byte_wr_en,
 	input [7:0] din,
@@ -239,6 +249,14 @@ module bcrypt_core (
 	output reg empty = 1,
 	output reg dout = 0
 	);
+
+	always @(posedge CLK) begin
+		if (rst) begin
+			init_ready <= 1;
+			crypt_ready <= 0;
+			empty <= 1;
+		end
+	end
 
 endmodule
 

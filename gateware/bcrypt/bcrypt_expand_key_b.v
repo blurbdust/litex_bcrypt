@@ -18,6 +18,7 @@ module bcrypt_expand_key_b #(
 	parameter KEY_LEN = 72
 	)(
 	input CLK,
+	input rst,
 	// Read from word_storage
 	input [7:0] din,
 	output reg [`MSB(KEY_LEN-1):0] rd_addr = 0,
@@ -43,6 +44,14 @@ module bcrypt_expand_key_b #(
 	reg [1:0] state = STATE_IDLE;
 
 	always @(posedge CLK) begin
+		if (rst) begin
+			state <= STATE_IDLE;
+			rd_addr <= 0;
+			dout <= 0;
+			output_byte_count <= 0;
+			output_word_count <= 0;
+		end
+		else begin
 		case (state)
 		STATE_IDLE: if (~word_empty)
 			state <= STATE_INPUT;
@@ -78,7 +87,8 @@ module bcrypt_expand_key_b #(
 			state <= STATE_IDLE;
 		end
 		endcase
-	end
+		end // else
+	end // always
 
 	assign empty = ~(state == STATE_OUTPUT);
 
