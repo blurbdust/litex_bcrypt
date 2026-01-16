@@ -80,7 +80,7 @@ class BaseSoC(SoCMini):
         # SoCMini ----------------------------------------------------------------------------------
 
         SoCMini.__init__(self, platform, sys_clk_freq,
-            ident         = f"Bcrypt on SQRL Acorn / {variant} variant / built on",
+            ident         = f"Bcrypt on SQRL Acorn (p{num_proxies} x c{cores_per_proxy}) / {variant} variant / built on",
             ident_version = True,
         )
 

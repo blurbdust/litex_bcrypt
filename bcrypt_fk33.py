@@ -3,7 +3,7 @@
 #
 # This file is part of LiteX-Bcrypt.
 #
-# bcrypt_acorn.py — Bcrypt on SQRL Acorn (CLE-215+)
+# bcrypt_fk33.py — Bcrypt on SQRL FK33
 # Demonstrates LiteX Bcrypt Proof-of-Concept (PoC) for flexible hardware acceleration.
 #
 # High-level:
@@ -51,10 +51,6 @@ class CRG(LiteXModule):
         self.rst       = Signal()
         self.cd_sys    = ClockDomain()
 
-        # Clk/Rst.
-        #clk50 = platform.request("clk50")
-        #rst_n = platform.request("rst_n")
-
         self.pll = pll = USPMMCM(speedgrade=-2)
         self.comb += pll.reset.eq(self.rst)
         pll.register_clkin(platform.request("clk200"), 200e6)
@@ -78,7 +74,7 @@ class BaseSoC(SoCMini):
         # SoCMini ----------------------------------------------------------------------------------
 
         SoCMini.__init__(self, platform, sys_clk_freq,
-            ident         = f"Bcrypt on FK33 / built on",
+            ident         = f"Bcrypt on FK33 (p{num_proxies} x c{cores_per_proxy}) / built on",
             ident_version = True,
         )
 
@@ -95,16 +91,6 @@ class BaseSoC(SoCMini):
         self.pcie_phy = USPHBMPCIEPHY(platform, platform.request("pcie_x8"),
             data_width = 256,
             bar0_size  = 0x10_0000)
-        # Endpoint
-        #self.pcie_endpoint = LitePCIeEndpoint(self.pcie_phy, max_pending_requests=8)
-
-#        self.pcie_phy.update_config({
-#            "Base_Class_Menu"          : "Encryption/Decryption_controllers",
-#            "Sub_Class_Interface_Menu" : "Other_en/decryption",
-#            "Class_Code_Base"          : "0B",
-#            "Class_Code_Sub"           : "80",
-#        })
-
 
         # Core.
         # -----
@@ -185,7 +171,7 @@ class BaseSoC(SoCMini):
 # Build --------------------------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Bcrypt on SQRL Acorn.")
+    parser = argparse.ArgumentParser(description="Bcrypt on SQRL FK33.")
 
     # Build/Load/Flash Arguments.
     # ---------------------------

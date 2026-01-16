@@ -3,7 +3,7 @@
 #
 # This file is part of LiteX-Bcrypt.
 #
-# bcrypt_ypcb.py — Bcrypt on YPCB-00338-1P1
+# bcrypt_xcu1525.py — Bcrypt on XCU1525
 # Demonstrates LiteX Bcrypt Proof-of-Concept (PoC) for flexible hardware acceleration.
 #
 # High-level:
@@ -22,7 +22,7 @@ from litex.gen import *
 from litex.build.io             import DifferentialInput
 from litex.build.openfpgaloader import OpenFPGALoader
 
-from litex_boards.platforms import ypcb_00338_1p1
+from litex_boards.platforms import sqrl_xcu1525
 
 from litex.soc.integration.soc      import SoCRegion
 from litex.soc.interconnect.csr     import *
@@ -35,7 +35,7 @@ from litex.soc.cores.clock import *
 from litex.soc.cores.led   import LedChaser
 
 from litepcie.software      import generate_litepcie_software_headers
-from litepcie.phy.s7pciephy import S7PCIEPHY
+from litepcie.phy.usppciephy import USPPCIEPHY
 
 from gateware.axis_8b import AXIS8Streamer, AXIS8Recorder
 from gateware.bcrypt_wrapper import BcryptWrapper
@@ -48,33 +48,37 @@ class CRG(LiteXModule):
     def __init__(self, platform, sys_clk_freq):
         self.rst       = Signal()
         self.cd_sys    = ClockDomain()
+        self.cd_sys4x  = ClockDomain()
+        self.cd_pll4x  = ClockDomain()
         self.cd_idelay = ClockDomain()
 
-        # Clk/Rst.
-        clk200    = platform.request("clk200")
-        clk200_se = Signal()
-        self.specials += DifferentialInput(clk200.p, clk200.n, clk200_se)
-        rst_n = platform.request("rst_n")
+        # # #
 
-        # PLL.
-        self.pll = pll = S7MMCM(speedgrade=-2)
-        self.comb += pll.reset.eq(~rst_n | self.rst)
-        pll.register_clkin(clk200_se, 200e6)
-        pll.create_clkout(self.cd_sys,       sys_clk_freq)
-        pll.create_clkout(self.cd_idelay,    200e6)
+        self.pll = pll = USPMMCM(speedgrade=-2)
+        self.comb += pll.reset.eq(self.rst)
+        pll.register_clkin(platform.request("clk300", 0), 300e6)
+        pll.create_clkout(self.cd_pll4x, sys_clk_freq*4, buf=None, with_reset=False)
+        pll.create_clkout(self.cd_idelay, 500e6)
         platform.add_false_path_constraints(self.cd_sys.clk, pll.clkin) # Ignore sys_clk to pll.clkin path created by SoC's rst.
 
-        # IDelayCtrl.
-        self.idelayctrl = S7IDELAYCTRL(self.cd_idelay)
+        self.specials += [
+            Instance("BUFGCE_DIV",
+                p_BUFGCE_DIVIDE=4,
+                i_CE=1, i_I=self.cd_pll4x.clk, o_O=self.cd_sys.clk),
+            Instance("BUFGCE",
+                i_CE=1, i_I=self.cd_pll4x.clk, o_O=self.cd_sys4x.clk),
+        ]
+
+        self.idelayctrl = USPIDELAYCTRL(cd_ref=self.cd_idelay, cd_sys=self.cd_sys)
 
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCMini):
-    def __init__(self, sys_clk_freq=139e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
+    def __init__(self, sys_clk_freq=125e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
 
         # Platform ---------------------------------------------------------------------------------
 
-        platform = ypcb_00338_1p1.Platform()
+        platform = sqrl_xcu1525.Platform()
 
         # Clocking ---------------------------------------------------------------------------------
 
@@ -83,7 +87,7 @@ class BaseSoC(SoCMini):
         # SoCMini ----------------------------------------------------------------------------------
 
         SoCMini.__init__(self, platform, sys_clk_freq,
-            ident         = f"Bcrypt on YPCB (p{num_proxies} x c{cores_per_proxy}) / built on",
+            ident         = f"Bcrypt on XCU1525 (p{num_proxies} x c{cores_per_proxy}) / built on",
             ident_version = True,
         )
 
@@ -97,45 +101,14 @@ class BaseSoC(SoCMini):
 
         # PHY.
         # ----
-        self.pcie_phy = S7PCIEPHY(platform, platform.request("pcie_x8"),
+        self.pcie_phy = USPPCIEPHY(platform, platform.request("pcie_x4"),
             data_width = 128,
             bar0_size  = 0x10_0000)
-
-        self.pcie_phy.update_config({
-            "Base_Class_Menu"          : "Encryption/Decryption_controllers",
-            "Sub_Class_Interface_Menu" : "Other_en/decryption",
-            "Class_Code_Base"          : "0B",
-            "Class_Code_Sub"           : "80",
-        })
-
 
         # Core.
         # -----
         self.add_pcie(phy=self.pcie_phy, ndmas=1, address_width=64)
         platform.add_period_constraint(self.crg.cd_sys.clk, 1e9/sys_clk_freq)
-
-        # Timings False Paths.
-        # --------------------
-        false_paths = [
-            ("{{*s7pciephy_clkout0}}", "{{sys_clk}}"),
-            ("{{*s7pciephy_clkout1}}", "{{sys_clk}}"),
-            ("{{*s7pciephy_clkout3}}", "{{sys_clk}}"),
-            ("{{*s7pciephy_clkout0}}", "{{*s7pciephy_clkout1}}")
-        ]
-        for clk0, clk1 in false_paths:
-            platform.toolchain.pre_placement_commands.append(f"set_false_path -from [get_clocks {clk0}] -to [get_clocks {clk1}]")
-            platform.toolchain.pre_placement_commands.append(f"set_false_path -from [get_clocks {clk1}] -to [get_clocks {clk0}]")
-
-        platform.toolchain.pre_placement_commands.append("reset_property LOC [get_cells -hierarchical -filter {{NAME=~pcie_s7/*gtx_channel.gtxe2_channel_i}}]")
-        platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y23 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[0].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
-        platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y22 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[1].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
-        platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y21 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[2].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
-        platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y20 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[3].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
-
-        platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y19 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[4].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
-        platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y18 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[5].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
-        platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y17 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[6].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
-        platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y16 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[7].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
 
         # Leds -------------------------------------------------------------------------------------
 
@@ -211,7 +184,7 @@ class BaseSoC(SoCMini):
 # Build --------------------------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Bcrypt on YPCB-00338-1P1.")
+    parser = argparse.ArgumentParser(description="Bcrypt on XCU1525.")
 
     # Build/Load/Flash Arguments.
     # ---------------------------
