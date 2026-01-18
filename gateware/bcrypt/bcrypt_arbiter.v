@@ -285,12 +285,18 @@ module bcrypt_arbiter #(
 
 	reg pkt_id_wr_en = 0, cmp0_wr_en = 0, cmp1_wr_en = 0;
 	always @(posedge CLK) begin
-		if (pkt_id_wr_en)
-			pkt_id <= rd_tmp;
-		if (cmp0_wr_en)
-			cmp_data[15:0] <= rd_tmp;
-		if (cmp1_wr_en)
-			cmp_data[31:16] <= rd_tmp;
+		if (rst) begin
+			pkt_id <= 0;
+			cmp_data <= 0;
+		end
+		else begin
+			if (pkt_id_wr_en)
+				pkt_id <= rd_tmp;
+			if (cmp0_wr_en)
+				cmp_data[15:0] <= rd_tmp;
+			if (cmp1_wr_en)
+				cmp_data[31:16] <= rd_tmp;
+		end
 	end
 
 	reg [31:0] delay_shr2 = 0;
@@ -332,9 +338,7 @@ module bcrypt_arbiter #(
 			cmp1_wr_en <= 0;
 			// Reset output packet state
 			outpkt_type <= 0;
-			cmp_data <= 0;
 			hash_num <= 0;
-			pkt_id <= 0;
 			cmp_result <= 0;
 		end
 		else begin
