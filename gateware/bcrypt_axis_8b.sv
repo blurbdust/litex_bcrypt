@@ -46,6 +46,9 @@ module bcrypt_axis_8b #(
   output wire                   idle,
   output wire                   error_o,
 
+  // Error clear (write 1 to clear latched error).
+  input  wire                   clear_error,
+
   // Core array passthrough.
   output wire  [7:0]            core_din,
   output wire  [1:0]            core_ctrl,
@@ -74,7 +77,7 @@ module bcrypt_axis_8b #(
   ) u_axis_in (
     .CLK           (CLK),
     .RSTN          (RSTN),
-    .rst           (1'b0),  // Don't reset input FIFO - must process reset packet's checksum
+    .rst           (force_reset),  // Flush input FIFO on force_reset to clear stale data
     .s_tdata       (s_axis_tdata),
     .s_tvalid      (s_axis_tvalid),
     .s_tready      (s_axis_tready),
@@ -94,7 +97,7 @@ module bcrypt_axis_8b #(
   stream16_to_axis8 u_axis_out (
     .CLK       (CLK),
     .RSTN      (RSTN),
-    .rst       (reset_complete),
+    .rst       (full_rst),
     .din       (dout16),
     .din_valid (~outpkt_empty),
     .din_ready (outpkt_rd_en),
@@ -118,6 +121,10 @@ module bcrypt_axis_8b #(
   wire              err_pkt_version, err_inpkt_type, err_inpkt_len, err_inpkt_checksum;
   wire              reset_complete;  // Pulses when reset packet is fully processed
 
+  // Force reset via clear_error CSR - escape hatch when inpkt_header is stuck in PKT_STATE_ERROR
+  wire force_reset = clear_error;
+  wire full_rst = reset_complete | force_reset;
+
   inpkt_header #(
     .VERSION         (VERSION),
     .PKT_MAX_LEN     (PKT_MAX_LEN),
@@ -126,7 +133,7 @@ module bcrypt_axis_8b #(
     .PKT_TYPE_RESET  (PKT_TYPE_RESET)
   ) u_hdr (
     .CLK             (CLK),
-    .rst             (reset_complete),  // Only clear errors after reset packet fully processed
+    .rst             (full_rst),  // Clear errors after reset packet OR via force_reset CSR
     .din             (din),
     .wr_en           (rd_en),
     .pkt_type        (inpkt_type),
@@ -153,8 +160,8 @@ module bcrypt_axis_8b #(
   // reset_pkt: asserts during the last data byte of reset packet (used only for early detection)
   // reset_complete: asserts after reset packet is FULLY processed (including checksum)
   wire reset_pkt = ~empty & (inpkt_type == PKT_TYPE_RESET) & inpkt_data & inpkt_end;
-  // Use reset_complete for all module resets - fires after checksum is processed
-  assign core_rst = reset_complete;
+  // Use full_rst for all module resets - includes force_reset via clear_error CSR
+  assign core_rst = full_rst;
 
   // WORD_LIST / TEMPLATE --------------------------------------------------------------------------
   wire                   word_list_full, word_list_empty, word_list_set_empty, word_list_end;
@@ -174,7 +181,7 @@ module bcrypt_axis_8b #(
     .RANGES_MAX   (RANGES_MAX)
   ) u_word_list (
     .CLK             (CLK),
-    .rst             (reset_complete),
+    .rst             (full_rst),
     .din             (din),
     .wr_en           (word_list_wr_en),
     .full            (word_list_full),
@@ -210,7 +217,7 @@ module bcrypt_axis_8b #(
     .WORD_MAX_LEN(WORD_MAX_LEN)
   ) u_word_gen (
     .CLK          (CLK),
-    .rst          (reset_complete),
+    .rst          (full_rst),
     .din          (din),
     .inpkt_id     (inpkt_id),
     .conf_wr_en   (word_gen_conf_en),
@@ -251,7 +258,7 @@ module bcrypt_axis_8b #(
 
   bcrypt_cmp_config u_cmp_config (
     .CLK               (CLK),
-    .rst               (reset_complete),
+    .rst               (full_rst),
     .din               (din),
     .wr_en             (cmp_config_wr_en),
     .full              (cmp_config_full),
@@ -277,7 +284,7 @@ module bcrypt_axis_8b #(
 
   bcrypt_expand_key_b u_expand (
     .CLK           (CLK),
-    .rst           (reset_complete),
+    .rst           (full_rst),
     .din           (word_gen_dout),
     .rd_addr       (word_gen_rd_addr),
     .word_set_empty(word_gen_set_empty),
@@ -300,7 +307,7 @@ module bcrypt_axis_8b #(
 
   bcrypt_data u_bcdata (
     .CLK                (CLK),
-    .rst                (reset_complete),
+    .rst                (full_rst),
     .pkt_id             (pkt_id),
     .word_id            (word_id_out),
     .gen_id             (gen_id),
@@ -344,7 +351,7 @@ module bcrypt_axis_8b #(
     .NUM_CORES (NUM_CORES)
   ) u_arb (
     .CLK                 (CLK),
-    .rst                 (reset_complete),
+    .rst                 (full_rst),
     .mode_cmp            (mode_cmp),
     .din                 (bcdata_dout),
     .ctrl                (bcdata_ctrl),
@@ -382,7 +389,7 @@ module bcrypt_axis_8b #(
   // COMPARATOR ------------------------------------------------------------------------------------
   comparator u_cmp (
     .CLK       (CLK),
-    .rst       (reset_complete),
+    .rst       (full_rst),
     .din       (cmp_din),
     .wr_en     (cmp_wr_en),
     .wr_addr   (cmp_wr_addr),
@@ -404,7 +411,7 @@ module bcrypt_axis_8b #(
     .SIMULATION   (SIMULATION)
   ) u_outpkt (
     .CLK            (CLK),
-    .rst            (reset_complete),
+    .rst            (full_rst),
     .din            (arbiter_dout),
     .rd_addr        (arbiter_rd_addr),
     .source_not_empty(~arbiter_empty),
@@ -428,9 +435,10 @@ module bcrypt_axis_8b #(
 
   reg error_r;
   always @(posedge CLK or negedge RSTN) begin
-    if (!RSTN)            error_r <= 1'b0;
+    if (!RSTN)              error_r <= 1'b0;
+    else if (clear_error)   error_r <= 1'b0;
     else if (|app_status | |pkt_comm_status)
-                          error_r <= 1'b1;
+                            error_r <= 1'b1;
   end
 
   delay #(

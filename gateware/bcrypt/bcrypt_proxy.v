@@ -139,7 +139,7 @@ module bcrypt_proxy #(
 		// to save routing resources
 		reg [3:0] byte_wr_en_r = 4'b0001;
 		always @(posedge CLK)
-			if (state_in == STATE_IN_END)
+			if (rst | state_in == STATE_IN_END)
 				byte_wr_en_r <= 4'b0001;
 			else if (wr_core_select[i])
 				byte_wr_en_r <= { byte_wr_en_r[2:0], byte_wr_en_r[3] };

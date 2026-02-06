@@ -259,6 +259,20 @@ module inpkt_header #(
 			end
 
 			PKT_STATE_ERROR: begin
+				// Auto-recover: scan for a valid version byte to re-sync
+				if (din == VERSION) begin
+					pkt_state <= PKT_STATE_TYPE;
+					err_pkt_version <= 0;
+					err_pkt_type <= 0;
+					err_pkt_len <= 0;
+					checksum <= 0;
+					checksum_tmp[7:0] <= din;
+					checksum_tmp[31:8] <= 0;
+					checksum_byte_count <= 1;
+					checksum_check_flag <= 0;
+					pkt_header <= 1;
+					pkt_byte_count <= 0;
+				end
 			end
 			endcase
 

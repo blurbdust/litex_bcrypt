@@ -49,6 +49,7 @@ class BcryptWrapper(LiteXModule):
         self._pkt_comm_status = CSRStatus(8)
         self._idle            = CSRStatus(fields=[CSRField("idle",  size=1)])
         self._error           = CSRStatus(fields=[CSRField("error", size=1)])
+        self._clear_error     = CSRStorage(fields=[CSRField("clear", size=1, pulse=True)])
 
         # Proxy fanout bus -------------------------------------------------------------------------
         core_din         = Signal(8)
@@ -91,6 +92,7 @@ class BcryptWrapper(LiteXModule):
             o_pkt_comm_status = self._pkt_comm_status.status,
             o_idle            = self._idle.fields.idle,
             o_error_o         = self._error.fields.error,
+            i_clear_error     = self._clear_error.fields.clear,
 
             # Proxy-level bus.
             o_core_din          = core_din,
