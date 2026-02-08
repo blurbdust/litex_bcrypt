@@ -477,7 +477,8 @@ module axis8_to_fifo #(
   reg [AW:0] wr_ptr;
   reg [AW:0] rd_ptr;
 
-  assign s_tready      = 1'b1;
+  wire   fifo_full     = (wr_ptr[AW-1:0] == rd_ptr[AW-1:0]) && (wr_ptr[AW] != rd_ptr[AW]);
+  assign s_tready      = ~fifo_full;
   assign empty         = (wr_ptr == rd_ptr);
   assign dout          = mem[rd_ptr[AW-1:0]][7:0];
   assign pkt_end_pulse = rd_en & ~empty & mem[rd_ptr[AW-1:0]][8];
