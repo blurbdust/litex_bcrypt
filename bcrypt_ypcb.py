@@ -70,7 +70,7 @@ class CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCMini):
-    def __init__(self, sys_clk_freq=139e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
+    def __init__(self, sys_clk_freq=137e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
 
         # Platform ---------------------------------------------------------------------------------
 
@@ -126,6 +126,11 @@ class BaseSoC(SoCMini):
             platform.toolchain.pre_placement_commands.append(f"set_false_path -from [get_clocks {clk0}] -to [get_clocks {clk1}]")
             platform.toolchain.pre_placement_commands.append(f"set_false_path -from [get_clocks {clk1}] -to [get_clocks {clk0}]")
 
+        # Vivado Timing Closure: Limit fanout on bcrypt arbiter broadcast nets.
+        platform.toolchain.pre_placement_commands.append(
+            "set_property MAX_FANOUT 50 [get_cells -hierarchical -filter {{NAME =~ */u_arb/core_din_reg*}}]"
+        )
+
         platform.toolchain.pre_placement_commands.append("reset_property LOC [get_cells -hierarchical -filter {{NAME=~pcie_s7/*gtx_channel.gtxe2_channel_i}}]")
         platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y23 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[0].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
         platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y22 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[1].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
@@ -136,6 +141,12 @@ class BaseSoC(SoCMini):
         platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y18 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[5].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
         platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y17 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[6].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
         platform.toolchain.pre_placement_commands.append("set_property LOC GTXE2_CHANNEL_X0Y16 [get_cells -hierarchical -filter {{NAME=~pcie_s7/*pipe_lane[7].gt_wrapper_i/gtx_channel.gtxe2_channel_i}}]")
+
+        # Bitstream Configuration.
+        # -----------------------
+        platform.toolchain.bitstream_commands.append(
+            "set_property BITSTREAM.CONFIG.UNUSEDPIN PULLNONE [current_design]"
+        )
 
         # Leds -------------------------------------------------------------------------------------
 
@@ -244,7 +255,11 @@ def main():
     )
 
     builder = Builder(soc, output_dir=os.path.join("build", get_build_name()), csr_csv="csr.csv")
-    builder.build(build_name=get_build_name(), run=args.build)
+    builder.build(build_name=get_build_name(), run=args.build,
+        vivado_place_directive               = "ExtraNetDelay_high",
+        vivado_route_directive               = "AggressiveExplore",
+        vivado_post_route_phys_opt_directive = "AggressiveExplore",
+    )
 
     # Generate PCIe C Headers.
     # ------------------------
