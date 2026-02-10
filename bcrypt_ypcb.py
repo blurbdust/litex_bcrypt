@@ -31,8 +31,9 @@ from litex.soc.integration.builder  import *
 
 from litex.soc.interconnect import wishbone
 
-from litex.soc.cores.clock import *
-from litex.soc.cores.led   import LedChaser
+from litex.soc.cores.clock     import *
+from litex.soc.cores.led       import LedChaser
+from litex.soc.cores.bpi_flash import BPIFlash
 
 from litepcie.software      import generate_litepcie_software_headers
 from litepcie.phy.s7pciephy import S7PCIEPHY
@@ -148,12 +149,23 @@ class BaseSoC(SoCMini):
             "set_property BITSTREAM.CONFIG.UNUSEDPIN PULLNONE [current_design]"
         )
 
+        # BPI Flash Image Generation.
+        # ----------------------------
+        platform.toolchain.additional_commands.append(
+            "write_cfgmem -format bin -interface BPIx16 -size 64 "
+            "-loadbit \"up 0x0 {build_name}.bit\" -force {build_name}_bpi.bin"
+        )
+
         # Leds -------------------------------------------------------------------------------------
 
         if with_led_chaser:
             self.leds = LedChaser(
                 pads         = platform.request_all("user_led"),
                 sys_clk_freq = sys_clk_freq)
+
+        # Flash ---------------------------------------------------------------------------------
+
+        self.flash = BPIFlash(platform.request("linear_flash"), sys_clk_freq)
 
         # Streamer SRAM ----------------------------------------------------------------------------
 

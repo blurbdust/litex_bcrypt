@@ -34,6 +34,8 @@ from litex.soc.interconnect import wishbone
 from litex.soc.cores.clock import *
 from litex.soc.cores.led   import LedChaser
 
+from litex.soc.cores.spi_flash import USSPIFlash
+
 from litepcie.software      import generate_litepcie_software_headers
 from litepcie.phy.usppciephy import USPPCIEPHY
 
@@ -116,6 +118,10 @@ class BaseSoC(SoCMini):
             self.leds = LedChaser(
                 pads         = platform.request_all("user_led"),
                 sys_clk_freq = sys_clk_freq)
+
+        # Flash ---------------------------------------------------------------------------------
+
+        self.flash = USSPIFlash(sys_clk_freq, 25e6)
 
         # Streamer SRAM ----------------------------------------------------------------------------
 
