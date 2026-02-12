@@ -108,19 +108,42 @@ class BcryptWrapper(LiteXModule):
         )
 
         # Proxies ----------------------------------------------------------------------------------
+        #
+        # Per-proxy pipeline registers for the high-fanout broadcast signals (din, ctrl).
+        # The arbiter's core_din register was routing 7.3ns across SLR boundaries to reach
+        # 450 core din_r_reg destinations (fanout=540). By adding a register per proxy,
+        # the arbiter only drives 30 proxy registers (low fanout, short route) and each
+        # proxy register drives 15 local cores (short route). This breaks the critical
+        # path into two manageable hops.
+        #
+        # The +1 cycle latency on the forward path is safe: din/ctrl/wr_en are all delayed
+        # consistently, and the ctrl sequence is held for many cycles. This latency is on
+        # the password-assignment path, NOT the per-round Blowfish computation.
 
         for i in range(num_proxies):
             p = BcryptProxy(n_cores=cores_per_proxy)
             self.add_module(name=f"proxy{i}", module=p)
+
+            # Per-proxy pipeline registers for broadcast signals (break SLR-crossing routes).
+            proxy_din_r  = Signal(8, name=f"proxy{i}_din_r")
+            proxy_ctrl_r = Signal(2, name=f"proxy{i}_ctrl_r")
+            proxy_wr_en_r = Signal(name=f"proxy{i}_wr_en_r")
+
+            self.sync += [
+                proxy_din_r.eq(core_din),
+                proxy_ctrl_r.eq(core_ctrl),
+                proxy_wr_en_r.eq(core_wr_en[i]),
+            ]
+
             self.comb += [
                 # Mode and Reset.
                 p.mode_cmp.eq(self._ctrl.fields.mode_cmp),
                 p.rst.eq(core_rst),
 
-                # TX to proxy.
-                p.din.eq(core_din),
-                p.ctrl.eq(core_ctrl),
-                p.wr_en.eq(core_wr_en[i]),
+                # TX to proxy (via pipeline registers).
+                p.din.eq(proxy_din_r),
+                p.ctrl.eq(proxy_ctrl_r),
+                p.wr_en.eq(proxy_wr_en_r),
 
                 # RX from proxy.
                 p.rd_en.eq(core_rd_en[i]),

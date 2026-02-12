@@ -61,7 +61,7 @@ class CRG(LiteXModule):
         self.pll = pll = S7MMCM(speedgrade=-2)
         self.comb += pll.reset.eq(~rst_n | self.rst)
         pll.register_clkin(clk200_se, 200e6)
-        pll.create_clkout(self.cd_sys,       sys_clk_freq)
+        pll.create_clkout(self.cd_sys,       sys_clk_freq, reset_buf="bufg")
         pll.create_clkout(self.cd_idelay,    200e6)
         platform.add_false_path_constraints(self.cd_sys.clk, pll.clkin) # Ignore sys_clk to pll.clkin path created by SoC's rst.
 
@@ -71,7 +71,7 @@ class CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCMini):
-    def __init__(self, sys_clk_freq=137e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
+    def __init__(self, sys_clk_freq=150e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, **kwargs):
 
         # Platform ---------------------------------------------------------------------------------
 
@@ -129,7 +129,24 @@ class BaseSoC(SoCMini):
 
         # Vivado Timing Closure: Limit fanout on bcrypt arbiter broadcast nets.
         platform.toolchain.pre_placement_commands.append(
-            "set_property MAX_FANOUT 50 [get_cells -hierarchical -filter {{NAME =~ */u_arb/core_din_reg*}}]"
+            "set_property MAX_FANOUT 16 [get_cells -hierarchical -filter {{NAME =~ */u_arb/core_din_reg*}}]"
+        )
+        platform.toolchain.pre_placement_commands.append(
+            "set_property MAX_FANOUT 16 [get_cells -hierarchical -filter {{NAME =~ */u_arb/core_ctrl_reg*}}]"
+        )
+
+        # Limit fanout on sys_rst (fanout=1381, 5.7ns route at 150MHz).
+        platform.toolchain.pre_placement_commands.append(
+            "set_property MAX_FANOUT 100 [get_nets sys_rst]"
+        )
+
+        # Overconstrain placement: add 500ps clock uncertainty so the placer
+        # targets tighter timing, then remove it before routing (AMD UG949 technique).
+        platform.toolchain.pre_placement_commands.append(
+            "set_clock_uncertainty 0.500 [get_clocks sys_clk]"
+        )
+        platform.toolchain.pre_routing_commands.append(
+            "set_clock_uncertainty 0 [get_clocks sys_clk]"
         )
 
         platform.toolchain.pre_placement_commands.append("reset_property LOC [get_cells -hierarchical -filter {{NAME=~pcie_s7/*gtx_channel.gtxe2_channel_i}}]")
@@ -244,8 +261,13 @@ def main():
 
     # Bcrypt Configuration.
     # ---------------------
-    parser.add_argument("--num-proxies",     type=int, default=1, help="Number of Bcrypt proxies.")
-    parser.add_argument("--cores-per-proxy", type=int, default=1, help="Number of cores per proxy.")
+    parser.add_argument("--num-proxies",     type=int, default=1,     help="Number of Bcrypt proxies.")
+    parser.add_argument("--cores-per-proxy", type=int, default=1,     help="Number of cores per proxy.")
+    parser.add_argument("--sys-clk-freq",    type=float, default=150e6, help="System clock frequency in Hz (default: 150 MHz).")
+
+    # Build Speed/Tuning.
+    # -------------------
+    parser.add_argument("--threads",       type=int, default=24, help="Vivado max threads (default: 24).")
 
     # Analyzer.
     # ---------
@@ -255,9 +277,13 @@ def main():
     # Build SoC.
     # ----------
     def get_build_name():
-        return f"bcrypt_p{args.num_proxies}_c{args.cores_per_proxy}"
+        mhz = int(args.sys_clk_freq / 1e6)
+        return f"bcrypt_p{args.num_proxies}_c{args.cores_per_proxy}_{mhz}mhz"
 
     soc = BaseSoC(
+        # Clock.
+        sys_clk_freq    = args.sys_clk_freq,
+
         # Bcrypt.
         num_proxies     = args.num_proxies,
         cores_per_proxy = args.cores_per_proxy,
@@ -267,8 +293,18 @@ def main():
     )
 
     builder = Builder(soc, output_dir=os.path.join("build", get_build_name()), csr_csv="csr.csv")
+
+    # Incremental compilation: reuse previous routing checkpoint if available.
+    route_dcp = os.path.join("build", get_build_name(), "gateware", f"{get_build_name()}_route.dcp")
+    if os.path.exists(route_dcp):
+        builder.soc.platform.toolchain.incremental_implementation = True
+
     builder.build(build_name=get_build_name(), run=args.build,
-        vivado_place_directive               = "ExtraNetDelay_high",
+        vivado_max_threads                   = args.threads,
+        # SSI-aware strategies for 2-SLR K480T device.
+        vivado_synth_directive               = "PerformanceOptimized",
+        vivado_place_directive               = "SSI_ExtraTimingOpt",
+        vivado_post_place_phys_opt_directive = "AggressiveExplore",
         vivado_route_directive               = "AggressiveExplore",
         vivado_post_route_phys_opt_directive = "AggressiveExplore",
     )
