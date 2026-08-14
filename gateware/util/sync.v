@@ -28,20 +28,24 @@ module sync_sig #(
 	reg [1:0] ff = {2{INIT[0]}};
 	assign out = ff[1];
 	
-	if (CLK1) begin
-	
+	// NOTE: generate/endgenerate are required here. They are optional in SystemVerilog (so Vivado
+	// accepts the bare form), but mandatory in Verilog-2001, which is how Quartus parses .v files.
+	generate
+	if (CLK1) begin: gen_clk1
+
 		always @(posedge clk)
 			if (ff[1] ^ INIT[0])
 				ff[1:0] <= {2{INIT[0]}};
 			else
 				ff[1:0] <= { ff[0], sig };
 
-	end else begin // ! CLK1
-	
+	end else begin: gen_no_clk1 // ! CLK1
+
 		always @(posedge clk)
 			ff[1:0] <= { ff[0], sig };
 
 	end
+	endgenerate
 
 endmodule
 

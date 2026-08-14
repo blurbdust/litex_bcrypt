@@ -154,12 +154,103 @@ class BcryptWrapper(LiteXModule):
             ]
 
     # Sources --------------------------------------------------------------------------------------
-    def add_sources(self):
-        """Register Verilog include paths and source dirs used by the wrapper."""
+    #
+    # Vendor-specific source overrides.
+    #
+    # Some RTL in this tree is written against Xilinx primitive behaviour and has no
+    # neutral formulation. Rather than change the shared file (and risk the hand-tuned
+    # Xilinx QoR), the vendor-specific replacement lives in gateware/bcrypt_<vendor>/ and
+    # the shared file is *excluded* from the source list for that vendor only.
+    #
+    # Maps vendor -> list of the shared files that vendor replaces, as paths relative to
+    # this directory. Each entry is either
+    #   "<rel/path.v>"                       -- replacement is bcrypt_<vendor>/path.v, or
+    #   ("<rel/path.v>", "<basename.ext>")   -- replacement is bcrypt_<vendor>/basename.ext
+    # (the second form only exists so a replacement may carry a different extension, e.g.
+    # .sv, when the vendor-specific formulation needs SystemVerilog). A replacement must
+    # keep the same module name(s) and port list(s) as the file it replaces.
+    #
+    # altera / bcrypt/bcrypt_core/S.v:
+    #   The S-box RAM output register carries a reset (`if (rst_rd) S0_out <= 0;`).
+    #   Xilinx block RAM has a dedicated output-register reset pin (RSTREG) so Vivado
+    #   infers BRAM from this; Altera M20K has no such pin, so Quartus infers no memory
+    #   at all and builds 32,768 flip-flops plus four 256:1 x 32b soft mux trees per
+    #   core. gateware/bcrypt_altera/S.v moves the reset downstream of the output
+    #   register as an AND mask -- cycle-for-cycle identical, see the proof in that file.
+    #
+    # altera / bcrypt/bcrypt_core/P_2x32.v:
+    #   ATTRIBUTE-ONLY delta -- one synthesis attribute changes, every statement is
+    #   byte-identical. PD is a 32x32 LUTRAM with an asynchronous read whose read
+    #   address is the same signal as its write address; Xilinx maps that to a RAM32M,
+    #   Quartus refuses to infer memory ("uninferred due to asynchronous read logic")
+    #   and builds 1,024 flip-flops plus a 32:1 x 32b soft mux. ramstyle="MLAB,
+    #   no_rw_check" puts it in an MLAB. See the proof in gateware/bcrypt_altera/P_2x32.v
+    #   that PD's read-during-write result is never consumed.
+    #
+    # altera / util/asymm_bram.v:
+    #   The mixed-width memory is described in the XST/Vivado idiom -- one narrow array
+    #   with RATIO separate always blocks each reading a different low-order slice of the
+    #   address space. Vivado infers one width-asymmetric BRAM; Quartus sees an array with
+    #   four independent synchronous read ports, which no M20K configuration provides, and
+    #   builds registers plus address decoders instead. Standalone on this device that
+    #   instance is 8,306 ALMs / 0 M20K, and in-design it was 8,211 of the 10,443 ALMs of
+    #   a 1-proxy 1-core build -- fixed overhead paid at every core count.
+    #   gateware/bcrypt_altera/asymm_bram.sv gathers the RATIO narrow words into a packed
+    #   dimension so the wide port is a single ordinary array read (1 ALM / 1 M20K). Same
+    #   storage elements, same addresses, same enables, same read-before-write semantics;
+    #   see the element-identity argument in that file.
+    _vendor_overrides = {
+        "altera": [
+            os.path.join("bcrypt", "bcrypt_core", "S.v"),
+            os.path.join("bcrypt", "bcrypt_core", "P_2x32.v"),
+            (os.path.join("util", "asymm_bram.v"), "asymm_bram.sv"),
+        ],
+    }
+
+    def add_sources(self, vendor="xilinx"):
+        """
+        Register Verilog include paths and source dirs used by the wrapper.
+
+        Parameters
+        ----------
+        vendor : "xilinx" (default) or "altera". Selects vendor-specific RTL overrides.
+                 The default keeps the Xilinx targets on exactly the source set they
+                 have always used -- no Xilinx build behaviour changes.
+        """
         from litex.gen import LiteXContext
-        cur_dir = os.path.dirname(__file__)
+        from litex.build import tools
+        platform = LiteXContext.platform
+        cur_dir  = os.path.dirname(__file__)
+
+        # Files replaced by a vendor-specific variant, and therefore skipped below.
+        excluded = set()
+        overrides = self._vendor_overrides.get(vendor, [])
+        if overrides:
+            vendor_dir = os.path.join(cur_dir, f"bcrypt_{vendor}")
+            platform.add_verilog_include_path(vendor_dir)
+            for entry in overrides:
+                rel, basename = entry if isinstance(entry, tuple) else (entry, os.path.basename(entry))
+                excluded.add(os.path.abspath(os.path.join(cur_dir, rel)))
+                platform.add_source(os.path.join(vendor_dir, basename))
+
         for name in ["util", "pkt_comm", "bcrypt"]:
             rtl_dir = os.path.join(cur_dir, name)
-            if os.path.isdir(rtl_dir):
-                LiteXContext.platform.add_verilog_include_path(rtl_dir)
-                LiteXContext.platform.add_source_dir(rtl_dir)
+            if not os.path.isdir(rtl_dir):
+                continue
+            platform.add_verilog_include_path(rtl_dir)
+            if not excluded:
+                # Untouched legacy path for vendors with no overrides (Xilinx).
+                platform.add_source_dir(rtl_dir)
+                continue
+            # Exactly the walk add_source_dir() does, including its language filter
+            # (which is what keeps S_data.txt out of the source list -- it is
+            # $readmemh'd through the SEARCH_PATH entries added above, not compiled),
+            # minus the overridden files.
+            for root, _dirs, files in os.walk(rtl_dir):
+                for filename in sorted(files):
+                    path = os.path.abspath(os.path.join(root, filename))
+                    if path in excluded:
+                        continue
+                    language = tools.language_by_filename(path)
+                    if language is not None:
+                        platform.add_source(path, language)
