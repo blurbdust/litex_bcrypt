@@ -49,13 +49,17 @@ from litescope import LiteScopeAnalyzer
 # CRG ----------------------------------------------------------------------------------------------
 
 class CRG(LiteXModule):
-    def __init__(self, platform, sys_clk_freq, with_pcie_mgmt=False):
+    def __init__(self, platform, sys_clk_freq, with_pcie_mgmt=False, pcie_mgmt_freq=50e6):
         self.rst    = Signal()
         self.cd_sys = ClockDomain()
         # The Stratix V PCIe hard IP needs a free-running management clock for its transceiver
-        # reconfiguration controller. 100 MHz is the documented minimum. 125 MHz does not close
-        # timing on this part (measured Fmax 108.55 MHz), which is why Intel's own example design
-        # runs it at 50 MHz despite specifying 100-125.
+        # reconfiguration controller. Intel documents 100-125 MHz but their own example designs run
+        # it at 50 MHz, and 125 MHz does not close timing on this part (measured Fmax 108.55 MHz).
+        #
+        # 50 MHz is used because it also frees sys_clk. Both outputs come from one VCO, and the
+        # 100 MHz constraint forces awkward ratios: asking for 190 yields 188.75, which the fitter
+        # then degrades to 186.976, and 205/208/210 MHz have no solution at all. At 50 MHz the same
+        # requests are exact and clock uncertainty drops from 0.300 to 0.200 ns.
         if with_pcie_mgmt:
             self.cd_pcie_mgmt = ClockDomain()
 
@@ -72,7 +76,7 @@ class CRG(LiteXModule):
         pll.register_clkin(clk125, 125e6)
         pll.create_clkout(self.cd_sys, sys_clk_freq)
         if with_pcie_mgmt:
-            pll.create_clkout(self.cd_pcie_mgmt, 100e6)
+            pll.create_clkout(self.cd_pcie_mgmt, pcie_mgmt_freq)
 
         # sys and clk125 are related only through the PLL. The SoC reset (sys domain) reaches
         # registers clocked by clk125 as an asynchronous reset, which STA otherwise times as a
@@ -83,7 +87,7 @@ class CRG(LiteXModule):
 
 class BaseSoC(SoCMini):
     def __init__(self, sys_clk_freq=100e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, speed_opt=True, placement_margin=0.0,
-                 with_pcie=False, pcie_connector=0, pcie_lanes=8, pcie_speed="gen2", pcie_data_width=128, pcie_ndmas=1, **kwargs):
+                 with_pcie=False, pcie_connector=0, pcie_lanes=8, pcie_speed="gen2", pcie_data_width=128, pcie_ndmas=1, pcie_mgmt_freq=50e6, **kwargs):
 
         # Platform ---------------------------------------------------------------------------------
 
@@ -91,7 +95,7 @@ class BaseSoC(SoCMini):
 
         # Clocking ---------------------------------------------------------------------------------
 
-        self.crg = CRG(platform, sys_clk_freq, with_pcie_mgmt=with_pcie)
+        self.crg = CRG(platform, sys_clk_freq, with_pcie_mgmt=with_pcie, pcie_mgmt_freq=pcie_mgmt_freq)
 
         # SoCMini ----------------------------------------------------------------------------------
 
@@ -338,14 +342,19 @@ def main():
     parser.add_argument("--pcie-connector",   type=int, default=0, choices=[0,1], help="Which x8 half of the edge connector.")
     parser.add_argument("--pcie-lanes",       type=int, default=8, help="PCIe lanes.")
     parser.add_argument("--pcie-data-width",  type=int, default=128, help="PCIe datapath width.")
+    parser.add_argument("--pcie-mgmt-freq",   type=float, default=50e6, help="Transceiver reconfiguration management clock. 50e6 keeps sys_clk on exact PLL ratios; 100e6 is Intel's documented minimum.")
     parser.add_argument("--placement-margin", type=float, default=0.0, help="Extra ns of setup clock uncertainty on sys_clk to over-constrain placement (e.g. 0.5).")
     parser.add_argument("--no-speed-opt", action="store_true", help="Disable Quartus speed-over-power fitter settings (saves ~15%% ALMs/core).")
+    parser.add_argument("--build-suffix", default="", help="Suffix for the build name, so concurrent experiments at different clocks or seeds do not share a directory.")
+    parser.add_argument("--fitter-seed",  type=int, default=None, help="Quartus fitter seed. Different seeds give different placements and a spread of Fmax.")
+    parser.add_argument("--num-processors", type=int, default=None, help="Cap Quartus parallel processors, so several experiment builds can share a machine.")
     args = parser.parse_args()
 
     # Build SoC.
     # ----------
     def get_build_name():
-        return f"bcrypt_sp_p{args.num_proxies}_c{args.cores_per_proxy}"
+        name = f"bcrypt_sp_p{args.num_proxies}_c{args.cores_per_proxy}"
+        return name + (f"_{args.build_suffix}" if args.build_suffix else "")
 
     soc = BaseSoC(
         # Generic.
@@ -363,9 +372,20 @@ def main():
         pcie_connector  = args.pcie_connector,
         pcie_lanes      = args.pcie_lanes,
         pcie_data_width = args.pcie_data_width,
+        pcie_mgmt_freq  = args.pcie_mgmt_freq,
     )
 
-    builder = Builder(soc, output_dir=os.path.join("build", get_build_name()), csr_csv="csr.csv")
+    if args.fitter_seed is not None:
+        soc.platform.toolchain.additional_qsf_commands += [
+            f"set_global_assignment -name SEED {args.fitter_seed}",
+        ]
+    if args.num_processors is not None:
+        soc.platform.toolchain.additional_qsf_commands += [
+            f"set_global_assignment -name NUM_PARALLEL_PROCESSORS {args.num_processors}",
+        ]
+
+    output_dir = os.path.join("build", get_build_name())
+    builder = Builder(soc, output_dir=output_dir, csr_csv=os.path.join(output_dir, "csr.csv"))
     builder.build(build_name=get_build_name(), run=args.build)
 
     # Load FPGA.
