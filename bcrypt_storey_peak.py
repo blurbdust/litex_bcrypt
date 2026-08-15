@@ -3,7 +3,7 @@
 #
 # This file is part of LiteX-Bcrypt.
 #
-# bcrypt_storey_peak.py — Bcrypt on Microsoft/HP "Storey Peak" (Altera Stratix V GS)
+# bcrypt_storey_peak.py: Bcrypt on Microsoft/HP "Storey Peak" (Altera Stratix V GS)
 #
 # High-level (same datapath as bcrypt_acorn.py):
 # - Two 1 KiB Wishbone SRAMs (host-accessible via JTAGBone):
@@ -14,8 +14,8 @@
 #
 # Difference from the Xilinx targets: there is NO PCIe here. LitePCIe has no Stratix V PHY, so the
 # host talks to the CSRs and both SRAMs over JTAGBone (litex_server --jtag) through the card's
-# onboard FT232H. That is functionally complete -- test_bcrypt.py drives everything through
-# litex.RemoteClient, which does not care which bridge is underneath -- but it is far slower than
+# onboard FT232H. That is functionally complete, since test_bcrypt.py drives everything through
+# litex.RemoteClient, which does not care which bridge is underneath, but it is far slower than
 # PCIe DMA, so treat throughput numbers from this target as a correctness result, not a benchmark.
 #
 # Start at 1x1 (the default). Larger arrays take a long time to build.
@@ -39,6 +39,8 @@ from litex.soc.interconnect import wishbone
 from litex.soc.cores.clock.intel_stratix5 import StratixVPLL
 from litex.soc.cores.led import LedChaser
 
+from litepcie.phy.svpciephy import SVPCIEPHY
+
 from gateware.axis_8b import AXIS8Streamer, AXIS8Recorder
 from gateware.bcrypt_wrapper import BcryptWrapper
 
@@ -47,9 +49,15 @@ from litescope import LiteScopeAnalyzer
 # CRG ----------------------------------------------------------------------------------------------
 
 class CRG(LiteXModule):
-    def __init__(self, platform, sys_clk_freq):
+    def __init__(self, platform, sys_clk_freq, with_pcie_mgmt=False):
         self.rst    = Signal()
         self.cd_sys = ClockDomain()
+        # The Stratix V PCIe hard IP needs a free-running management clock for its transceiver
+        # reconfiguration controller. 100 MHz is the documented minimum. 125 MHz does not close
+        # timing on this part (measured Fmax 108.55 MHz), which is why Intel's own example design
+        # runs it at 50 MHz despite specifying 100-125.
+        if with_pcie_mgmt:
+            self.cd_pcie_mgmt = ClockDomain()
 
         # # #
 
@@ -63,6 +71,8 @@ class CRG(LiteXModule):
         self.comb += pll.reset.eq(self.rst)
         pll.register_clkin(clk125, 125e6)
         pll.create_clkout(self.cd_sys, sys_clk_freq)
+        if with_pcie_mgmt:
+            pll.create_clkout(self.cd_pcie_mgmt, 100e6)
 
         # sys and clk125 are related only through the PLL. The SoC reset (sys domain) reaches
         # registers clocked by clk125 as an asynchronous reset, which STA otherwise times as a
@@ -72,7 +82,8 @@ class CRG(LiteXModule):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCMini):
-    def __init__(self, sys_clk_freq=100e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, speed_opt=True, placement_margin=0.0, **kwargs):
+    def __init__(self, sys_clk_freq=100e6, with_led_chaser=True, num_proxies=1, cores_per_proxy=1, with_analyzer=False, speed_opt=True, placement_margin=0.0,
+                 with_pcie=False, pcie_connector=0, pcie_lanes=8, pcie_speed="gen2", pcie_data_width=128, pcie_ndmas=1, **kwargs):
 
         # Platform ---------------------------------------------------------------------------------
 
@@ -80,7 +91,7 @@ class BaseSoC(SoCMini):
 
         # Clocking ---------------------------------------------------------------------------------
 
-        self.crg = CRG(platform, sys_clk_freq)
+        self.crg = CRG(platform, sys_clk_freq, with_pcie_mgmt=with_pcie)
 
         # SoCMini ----------------------------------------------------------------------------------
 
@@ -91,7 +102,7 @@ class BaseSoC(SoCMini):
 
         # JTAGBone ---------------------------------------------------------------------------------
         #
-        # This is the ONLY host interface on this target -- it replaces PCIe entirely.
+        # This is the only host interface on this target; it replaces PCIe entirely.
 
         # altera_reserved_tck is otherwise an unconstrained clock, which would leave the JTAGBone
         # TAP logic untimed. Constrain it conservatively and declare it asynchronous.
@@ -115,7 +126,7 @@ class BaseSoC(SoCMini):
             "set_false_path -from [get_clocks clk125] -to [get_clocks sys_clk]",
         ]
 
-        # Placement margin -- the Quartus port of bcrypt_ypcb.py's UG949 trick.
+        # Placement margin: the Quartus port of bcrypt_ypcb.py's UG949 trick.
         #
         # The Xilinx target adds 500ps of clock uncertainty before placement and removes it before
         # routing, so the placer aims tighter than the real target while the design still SIGNS OFF
@@ -177,14 +188,27 @@ class BaseSoC(SoCMini):
             "set_instance_assignment -name MAX_FANOUT 16 -to \"*wr_en_r*\"",
         ]
 
-        self.add_jtagbone()
-        platform.add_period_constraint(self.jtagbone_phy.cd_jtag.clk, 1e9/20e6)
-        platform.add_false_path_constraints(self.jtagbone_phy.cd_jtag.clk, self.crg.cd_sys.clk)
+        # JTAGBone and PCIe are mutually exclusive on Stratix V.
+        #
+        # JTAGBone instantiates the raw `stratixv_jtag` primitive, while the PCIe hard IP's
+        # transceiver reconfiguration controller embeds a Nios II whose debug slave uses
+        # `sld_virtual_jtag`. Quartus permits only one JTAG mechanism per design and rejects the
+        # combination outright:
+        #   Error (12143): JTAG primitive "stratixv_jtag" is already used in the design. Other
+        #   entities that interface with JTAG via debug hub ... are not allowed
+        # The same collision blocks DDR3 ECC (its PHY CSR block adds an altsource_probe SLD node).
+        #
+        # With PCIe present JTAGBone is redundant, since the host reaches the same Wishbone bus
+        # over BAR0 MMIO and far faster, so PCIe simply takes precedence.
+        if not with_pcie:
+            self.add_jtagbone()
+            platform.add_period_constraint(self.jtagbone_phy.cd_jtag.clk, 1e9/20e6)
+            platform.add_false_path_constraints(self.jtagbone_phy.cd_jtag.clk, self.crg.cd_sys.clk)
 
         # NOTE: deliberately NO add_period_constraint() on cd_sys here. The Xilinx targets need one
         # because Vivado does not derive the PLL output clock, but on Quartus `derive_pll_clocks`
         # already constrains it. Adding one anyway emits `create_clock ... [get_nets {sys_clk}]`,
-        # which defines a *base* clock that shadows the PLL-generated one -- STA then loses the
+        # which defines a base clock that shadows the PLL-generated one. STA then loses the
         # clk125->sys relationship and the reset false-path below stops matching the real launch
         # clock, resurfacing as a ~-0.37ns setup violation on clk125.
 
@@ -216,12 +240,12 @@ class BaseSoC(SoCMini):
         self.platform.add_source("gateware/bcrypt_axis_8b.sv")
         # add_sources() registers gateware/{util,pkt_comm,bcrypt} as both source dirs and Verilog
         # include paths. On Quartus the include paths become SEARCH_PATH entries, which is also how
-        # bcrypt_data.v's $readmemh("S_data.txt", ...) resolves -- S_data.txt lives in gateware/bcrypt.
+        # bcrypt_data.v's $readmemh("S_data.txt", ...) resolves. S_data.txt lives in gateware/bcrypt.
         #
         # vendor="altera" swaps gateware/bcrypt/bcrypt_core/S.v for gateware/bcrypt_altera/S.v,
         # whose S-box read path has no reset on the output register and therefore infers M20K
         # instead of 32,768 flip-flops plus four 256:1 soft mux trees per core. This selection is
-        # local to this target -- the Xilinx targets call add_sources() with the default vendor and
+        # local to this target. The Xilinx targets call add_sources() with the default vendor and
         # compile the original file unchanged.
         self.bcrypt.add_sources(vendor="altera")
 
@@ -250,6 +274,29 @@ class BaseSoC(SoCMini):
             self.recorder.sink.last .eq(self.bcrypt.source.last),
             self.bcrypt.source.ready.eq(self.recorder.sink.ready),
         ]
+
+        # PCIe -------------------------------------------------------------------------------------
+        # Stratix V PCIe hard IP via litepcie.phy.svpciephy. Connector 0 (PCIE1, edge lanes 0-7) is
+        # the half that a single-x8-wired slot actually connects; it lives on the hard IP block that
+        # Quartus hides, so building this needs the sv_second_pcie_hip LD_PRELOAD shim.
+        if with_pcie:
+            self.pcie_phy = SVPCIEPHY(platform, platform.request("pcie_x8", pcie_connector),
+                data_width = pcie_data_width,
+                speed      = pcie_speed,
+                nlanes     = pcie_lanes,
+                # MUST cover the streamer/recorder SRAMs, not just the CSR region. The memory map is
+                #   csr           0x00000000  64 KiB
+                #   streamer_mem  0x00040000   1 KiB
+                #   recorder_mem  0x00080000   1 KiB
+                # so a 128 KiB BAR0 reaches the CSRs but leaves both SRAMs unreachable from the host
+                # so the core can be kicked but never fed a packet or read for a result. 1 MiB spans
+                # the whole map, and matches what bcrypt_acorn.py uses on Xilinx.
+                bar0_size  = 0x10_0000,
+                mgmt_clk   = self.crg.cd_pcie_mgmt.clk,
+                mgmt_rst   = self.crg.cd_pcie_mgmt.rst,
+                mgmt_clk_name = "pcie_mgmt_clk",
+            )
+            self.add_pcie(phy=self.pcie_phy, ndmas=pcie_ndmas)
 
         # Analyzer ---------------------------------------------------------------------------------
 
@@ -287,6 +334,10 @@ def main():
     # Analyzer.
     # ---------
     parser.add_argument("--with-analyzer", action="store_true", help="Add LiteScope analyzer on AXI streams.")
+    parser.add_argument("--with-pcie",        action="store_true", help="Add PCIe endpoint (needs sv_second_pcie_hip LD_PRELOAD for connector 0).")
+    parser.add_argument("--pcie-connector",   type=int, default=0, choices=[0,1], help="Which x8 half of the edge connector.")
+    parser.add_argument("--pcie-lanes",       type=int, default=8, help="PCIe lanes.")
+    parser.add_argument("--pcie-data-width",  type=int, default=128, help="PCIe datapath width.")
     parser.add_argument("--placement-margin", type=float, default=0.0, help="Extra ns of setup clock uncertainty on sys_clk to over-constrain placement (e.g. 0.5).")
     parser.add_argument("--no-speed-opt", action="store_true", help="Disable Quartus speed-over-power fitter settings (saves ~15%% ALMs/core).")
     args = parser.parse_args()
@@ -308,6 +359,10 @@ def main():
         with_analyzer   = args.with_analyzer,
         speed_opt       = not args.no_speed_opt,
         placement_margin= args.placement_margin,
+        with_pcie       = args.with_pcie,
+        pcie_connector  = args.pcie_connector,
+        pcie_lanes      = args.pcie_lanes,
+        pcie_data_width = args.pcie_data_width,
     )
 
     builder = Builder(soc, output_dir=os.path.join("build", get_build_name()), csr_csv="csr.csv")

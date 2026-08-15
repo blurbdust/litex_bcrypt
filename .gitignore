@@ -1,0 +1,11 @@
+# Build output. Note that build/sim/gateware/S_data.txt is tracked and stays
+# tracked: .gitignore does not affect files already in the index.
+build/
+
+# Generated CSR maps, written next to the target by Builder(csr_csv=...).
+csr.csv
+analyzer.csv
+
+# Python.
+__pycache__/
+*.pyc

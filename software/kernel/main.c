@@ -1234,6 +1234,7 @@ static void litepcie_pci_remove(struct pci_dev *dev)
 /* PCI device ID table */
 static const struct pci_device_id litepcie_pci_ids[] = {
 	/* Xilinx */
+	{ PCI_DEVICE(0x1172, 0xe001), }, /* Altera Stratix V (svpciephy). */
 	{ PCI_DEVICE(PCIE_XILINX_VENDOR_ID, PCIE_XILINX_DEVICE_ID_S7_GEN2_X1), },
 	{ PCI_DEVICE(PCIE_XILINX_VENDOR_ID, PCIE_XILINX_DEVICE_ID_S7_GEN2_X2), },
 	{ PCI_DEVICE(PCIE_XILINX_VENDOR_ID, PCIE_XILINX_DEVICE_ID_S7_GEN2_X4), },
