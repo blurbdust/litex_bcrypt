@@ -21,7 +21,9 @@
 # Start at 1x1 (the default). Larger arrays take a long time to build.
 
 import os
+import shutil
 import argparse
+import subprocess
 
 from migen import *
 
@@ -319,6 +321,42 @@ class BaseSoC(SoCMini):
                 csr_csv      = "analyzer.csv"
             )
 
+# PCIe hard IP interposer ---------------------------------------------------------------------------
+
+def build_pcie_hip_shim(output_dir):
+    """Compile software/quartus/sv_pcie_hip_enable.c and return the .so path.
+
+    Built into the build directory rather than shipped as a binary, and rebuilt only when the source
+    is newer. Connector 0 cannot be fitted without it.
+    """
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "software", "quartus", "sv_pcie_hip_enable.c")
+    if not os.path.exists(src):
+        raise SystemExit(f"PCIe hard IP interposer source is missing: {src}")
+
+    # Absolute: LiteX's build script chdirs into the gateware directory before invoking Quartus, and
+    # ld.so resolves LD_PRELOAD relative to the process CWD, so a relative path fails with
+    # "Error (11176): Ld.so: object ... from LD_PRELOAD cannot be preloaded".
+    so = os.path.abspath(os.path.join(output_dir, "sv_pcie_hip_enable.so"))
+    os.makedirs(output_dir, exist_ok=True)
+    if os.path.exists(so) and os.path.getmtime(so) >= os.path.getmtime(src):
+        return so
+
+    cc = os.environ.get("CC", "gcc")
+    if shutil.which(cc) is None:
+        raise SystemExit(
+            f"Connector 0 needs the PCIe hard IP interposer, which requires {cc} to build.\n"
+            f"Install it, set CC, pass a prebuilt --pcie-shim, or build for --pcie-connector 1\n"
+            f"(connector 1 trains at width x0 in a slot wired for x8, since only edge lanes 0-7\n"
+            f"are connected there)."
+        )
+
+    cmd = [cc, "-shared", "-fPIC", "-O2", "-o", so, src, "-ldl"]
+    if subprocess.call(cmd) != 0:
+        raise SystemExit("Failed to build the PCIe hard IP interposer: " + " ".join(cmd))
+    print(f"[PCIe] built hard IP interposer: {so}")
+    return so
+
 # Build --------------------------------------------------------------------------------------------
 
 def main():
@@ -347,6 +385,7 @@ def main():
     parser.add_argument("--no-speed-opt", action="store_true", help="Disable Quartus speed-over-power fitter settings (saves ~15%% ALMs/core).")
     parser.add_argument("--build-suffix", default="", help="Suffix for the build name, so concurrent experiments at different clocks or seeds do not share a directory.")
     parser.add_argument("--fitter-seed",  type=int, default=None, help="Quartus fitter seed. Different seeds give different placements and a spread of Fmax.")
+    parser.add_argument("--pcie-shim",     default=None, help="Path to sv_second_pcie_hip preload_me.so. Required for --pcie-connector 0; also read from SV_PCIE_SHIM.")
     parser.add_argument("--num-processors", type=int, default=None, help="Cap Quartus parallel processors, so several experiment builds can share a machine.")
     args = parser.parse_args()
 
@@ -385,6 +424,20 @@ def main():
         ]
 
     output_dir = os.path.join("build", get_build_name())
+
+    # Connector 0 sits on a PCIe hard IP block Quartus reports as disabled, so the Fitter refuses it
+    # with Error (175020) before placement starts. software/quartus/sv_pcie_hip_enable.c answers
+    # "enabled" for that one block and forwards every other query; see its header for the detail.
+    #
+    # LiteX's quartus.py run_script() calls subprocess.call() with no env=, so the Quartus child
+    # inherits os.environ from this process and setting LD_PRELOAD here is enough.
+    if args.build and args.with_pcie and args.pcie_connector == 0:
+        shim = args.pcie_shim or os.environ.get("SV_PCIE_SHIM") or build_pcie_hip_shim(output_dir)
+        quartus_lib = os.path.join(os.path.dirname(os.path.dirname(
+            shutil.which("quartus_sh") or "")), "linux64")
+        os.environ["LD_PRELOAD"] = shim
+        os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(
+            [p for p in [quartus_lib, os.environ.get("LD_LIBRARY_PATH", "")] if p])
     builder = Builder(soc, output_dir=output_dir, csr_csv=os.path.join(output_dir, "csr.csv"))
     builder.build(build_name=get_build_name(), run=args.build)
 

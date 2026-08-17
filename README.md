@@ -81,6 +81,20 @@ For more detailed instructions and additional information, please see the OpenFP
 
 > **Note**: Use `--variant=m2` (default) or `--variant=baseboard`.
 
+### Microsoft/HP "Storey Peak" (Altera Stratix V)
+
+```sh
+# 385 cores @ 194.38 MHz
+./bcrypt_storey_peak.py --num-proxies 35 --cores-per-proxy 11 \
+    --with-pcie --pcie-connector 0 --sys-clk-freq 195e6 --placement-margin 0.5 --build
+```
+
+Quartus reports the PCIe hard IP block behind connector 0 as disabled and refuses to place it
+(`Error (175020)`), so the build preloads `software/quartus/sv_pcie_hip_enable.c`, which answers
+"enabled" for that one block. Needs `gcc`. All credit for the shim working out which symbol and
+block id to override goes to
+[ruurdk/sv_second_pcie_hip](https://github.com/ruurdk/sv_second_pcie_hip).
+
 [> Test the Hardware over PCIe
 -------------------------------
 ### 1. Build & Load LitePCIe Driver
