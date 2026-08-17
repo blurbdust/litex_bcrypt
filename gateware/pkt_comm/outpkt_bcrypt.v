@@ -205,7 +205,9 @@ module outpkt_bcrypt #(
 	end
 
 
-	if (SIMULATION) begin
+	// generate/endgenerate required for Verilog-2001 (Quartus); optional in SystemVerilog (Vivado).
+	generate
+	if (SIMULATION) begin: gen_sim_counters
 		reg [15:0] PKT_count_cmp_eq = 0;
 		reg [15:0] PKT_count_done = 0;
 		reg [15:0] PKT_count_result = 0;
@@ -222,6 +224,7 @@ module outpkt_bcrypt #(
 					PKT_count_other <= PKT_count_other + 1'b1;
 			end
 	end
+	endgenerate
 
 
 	assign checksum_wr_en = ~pkt_empty & ~checksum_full;

@@ -187,7 +187,9 @@ module outpkt_v3 #(
 	{16{1'b0}};
 	// pkt_dout assigment ends
 	
-	if (SIMULATION) begin
+	// generate/endgenerate required for Verilog-2001 (Quartus); optional in SystemVerilog (Vivado).
+	generate
+	if (SIMULATION) begin: gen_sim_counters
 		reg [15:0] PKT_count_cmp_eq = 0;
 		reg [15:0] PKT_count_done = 0;
 		reg [15:0] PKT_count_result = 0;
@@ -204,7 +206,8 @@ module outpkt_v3 #(
 					PKT_count_other <= PKT_count_other + 1'b1;
 			end
 	end
-	
+	endgenerate
+
 	assign rd_en_pkt = full_r & ~checksum_full;
 	assign checksum_wr_en = rd_en_pkt;
 /*

@@ -25,7 +25,12 @@
 module bcrypt_proxy #(
 	parameter NUM_CORES = -1,
 	parameter DUMMY = 0,
-	parameter CORES_NOT_DUMMY = 0
+	// Explicit width: this parameter is bit-indexed below (CORES_NOT_DUMMY[i]), so it must be at
+	// least NUM_CORES wide. Migen emits parameter values as minimally-sized literals (1'd0), and
+	// an unsized declaration then inherits that width -- which elaborates fine at 1 core but fails
+	// with "index N cannot fall outside the declared range [0:0]" for any larger core count under
+	// Quartus. Vivado tolerates the unsized form; this makes it correct for both.
+	parameter [31:0] CORES_NOT_DUMMY = 0
 	)(
 	input CLK,
 	input rst,
